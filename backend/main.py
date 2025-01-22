@@ -1,5 +1,9 @@
 import warnings
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Request, Header, Depends
+import asyncio
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Request, Header, Depends, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from typing import List, Dict, Union, Any, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +24,7 @@ import tempfile
 import json
 import openai
 import time
-from database import init_db, get_session, create_conversation, add_message, get_conversation, list_conversations, delete_conversation
+from database import init_db, get_session, create_conversation, add_message, get_conversation, list_conversations, delete_conversation, update_last_assistant_message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
@@ -29,17 +33,102 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure default OpenAI key from environment
-DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+# OpenAI-compatible API models
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="The role of the message sender (system/user/assistant)")
+    content: str = Field(..., description="The content of the message")
+    name: str = None
 
-# Configure audio storage
+class ChatCompletionRequest(BaseModel):
+    model: str = Field(..., description="The model to use for completion")
+    messages: List[ChatMessage] = Field(..., description="The messages to generate a response for")
+    temperature: float = Field(1.0, ge=0.0, le=2.0, description="Sampling temperature")
+    max_tokens: int = Field(256, gt=0, description="Maximum number of tokens to generate")
+    top_p: float = Field(1.0, ge=0.0, le=1.0, description="Nucleus sampling threshold")
+    frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0, description="Frequency penalty")
+    presence_penalty: float = Field(0.0, ge=-2.0, le=2.0, description="Presence penalty")
+    
+class ErrorResponse(BaseModel):
+    error: Dict[str, Any]
+
+class Usage(BaseModel):
+    prompt_tokens: int = Field(default=0)
+    completion_tokens: int = Field(default=0)
+    total_tokens: int = Field(default=0)
+
+class ChatChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: str = "stop"
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[ChatChoice]
+    usage: Usage
+
+# OpenAI API error handler
+async def openai_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    error_msg = str(exc)
+    if isinstance(exc, HTTPException):
+        status_code = exc.status_code
+        error_type = "invalid_request_error" if status_code == 400 else "api_error"
+    else:
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        error_type = "server_error"
+    
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": error_msg,
+                "type": error_type,
+                "code": status_code,
+                "param": None
+            }
+        }
+    )
+
+# Configure environment and API settings
+DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+API_HOST = os.getenv("API_HOST", "http://localhost:8000")
+
+# Configure audio storage and URLs
 AUDIO_DIR = "audio_files"
+TEMP_AUDIO_DIR = os.path.join(AUDIO_DIR, "temp")
+AUDIO_BASE_URL = f"{API_HOST}/audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
+
+# Configure temporary file cleanup (files older than 1 hour)
+TEMP_FILE_MAX_AGE = 3600  # 1 hour in seconds
+
+def cleanup_temp_audio():
+    """Clean up old temporary audio files"""
+    now = time.time()
+    for file in os.listdir(TEMP_AUDIO_DIR):
+        file_path = os.path.join(TEMP_AUDIO_DIR, file)
+        if os.path.getmtime(file_path) < now - TEMP_FILE_MAX_AGE:
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logger.error(f"Failed to remove temp file {file_path}: {str(e)}")
+
+def get_audio_url(audio_path: str) -> str:
+    """Convert audio file path to full URL"""
+    if not audio_path:
+        return None
+    return f"{AUDIO_BASE_URL}/{audio_path}"
 
 # Ignore warnings from finetuned model
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Luganda Speech-to-Speech API")
+
+# Add OpenAI-compatible error handler
+app.add_exception_handler(Exception, openai_exception_handler)
 
 # Mount audio files directory
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
@@ -69,9 +158,18 @@ The user will send you text in Luganda and you will respond in Luganda as well.
 The Luganda given comes from a speech to text output and will not be exact to the word, 
 so use the nearest word to it to generate a response."""
 
-def save_audio_file(audio_data: bytes, conversation_id: int) -> str:
+def save_audio_file(audio_data: bytes, conversation_id: Union[int, str]) -> str:
     """Save audio file and return its path"""
-    # Create conversation directory if it doesn't exist
+    # Handle temporary files
+    if conversation_id == "temp":
+        cleanup_temp_audio()  # Clean up old temp files
+        filename = f"temp_{int(time.time())}.wav"
+        filepath = os.path.join(TEMP_AUDIO_DIR, filename)
+        with open(filepath, 'wb') as f:
+            f.write(audio_data)
+        return os.path.join("temp", filename)
+    
+    # Handle conversation files
     conv_dir = os.path.join(AUDIO_DIR, str(conversation_id))
     os.makedirs(conv_dir, exist_ok=True)
     
@@ -131,7 +229,10 @@ async def root():
             "speech_to_text": "/api/v1/transcribe",
             "text_to_speech": "/api/v1/synthesize",
             "chat": "/api/v1/chat",
-            "conversations": "/api/v1/conversations"
+            "conversations": "/api/v1/conversations",
+            "openai_compatible": {
+                "chat": "/v1/chat/completions"
+            }
         }
     }
 
@@ -155,11 +256,27 @@ async def get_conversation_by_id(
     conversation_id: int,
     session: AsyncSession = Depends(get_session)
 ):
-    """Get a specific conversation"""
+    """Get a specific conversation with full URLs"""
     conversation = await get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation
+    
+    # Add full URLs to the conversation response
+    return {
+        "id": conversation["id"],
+        "started_at": conversation["started_at"],
+        "url": f"{API_HOST}/chat/{conversation['id']}",
+        "messages": [
+            {
+                "id": msg["id"],
+                "role": msg["role"],
+                "content": msg["content"],
+                "audio_url": get_audio_url(msg["audio_path"]) if msg["audio_path"] else None,
+                "created_at": msg["created_at"]
+            }
+            for msg in conversation["messages"]
+        ]
+    }
 
 @app.delete("/api/v1/conversations/{conversation_id}")
 async def delete_conversation_by_id(
@@ -243,6 +360,81 @@ async def transcribe_audio(
         logger.error(f"Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/v1/chat/completions")
+async def create_chat_completion(
+    request: ChatCompletionRequest,
+    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key")
+):
+    """OpenAI-compatible chat completion endpoint"""
+    try:
+        # Use provided API key or fall back to default
+        api_key = x_openai_key or DEFAULT_OPENAI_KEY
+        if not api_key:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication failed. Please provide a valid API key."
+            )
+        
+        # Configure OpenAI with the API key
+        openai.api_key = api_key
+        
+        # Get the last user message
+        user_message = next(
+            (msg for msg in reversed(request.messages) if msg.role == "user"),
+            None
+        )
+        if not user_message:
+            raise HTTPException(
+                status_code=400,
+                detail="No user message found in the conversation"
+            )
+        
+        # Call OpenAI API with the provided parameters
+        response = openai.ChatCompletion.create(
+            model=request.model,
+            messages=[{
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            }] + [{"role": m.role, "content": m.content} for m in request.messages],
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            top_p=request.top_p,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty
+        )
+        
+        # Convert OpenAI response to our format
+        chat_response = ChatCompletionResponse(
+            id=f"chatcmpl-{int(time.time())}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[
+                ChatChoice(
+                    index=idx,
+                    message=ChatMessage(
+                        role="assistant",
+                        content=choice["message"]["content"]
+                    ),
+                    finish_reason=choice.get("finish_reason", "stop")
+                )
+                for idx, choice in enumerate(response["choices"])
+            ],
+            usage=Usage(
+                prompt_tokens=response["usage"]["prompt_tokens"],
+                completion_tokens=response["usage"]["completion_tokens"],
+                total_tokens=response["usage"]["total_tokens"]
+            )
+        )
+        
+        return chat_response
+        
+    except Exception as e:
+        logger.error(f"Chat completion error: {str(e)}")
+        if isinstance(e, openai.error.OpenAIError):
+            status_code = getattr(e, "http_status", 500)
+            raise HTTPException(status_code=status_code, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/v1/chat")
 async def chat(
     request: Request,
@@ -277,7 +469,7 @@ async def chat(
             # Call OpenAI API
             logger.info(f"Sending to OpenAI: {text}")
             response = openai.ChatCompletion.create(
-                model="gpt-4",
+                model="gpt-4o",  # Using standard GPT-4 model name
                 messages=[
                     {
                         "role": "system",
@@ -298,17 +490,58 @@ async def chat(
             response_text = response['choices'][0]['message']['content']
             logger.info(f"OpenAI response: {response_text}")
             
-            # Save message if conversation_id provided
+            response_data = {
+                "text": response_text
+            }
+
+            # Generate audio for the response
+            model_manager = ModelManager.get_instance()
+            waveforms = model_manager.synthesize_speech(response_text)
+            
+            # Convert to WAV bytes
+            buffer = io.BytesIO()
+            torchaudio.save(buffer, waveforms, 22050, format='wav')
+            buffer.seek(0)
+            wav_bytes = buffer.read()
+            
+            # Save message and audio if conversation_id provided
             if conversation_id:
+                # Save the audio file and get its path
+                audio_path = save_audio_file(wav_bytes, str(conversation_id))
+                
+                # Save the message with audio path
                 await add_message(
                     conversation_id=conversation_id,
                     role="assistant",
-                    content=response_text
+                    content=response_text,
+                    audio_path=audio_path
                 )
-            
-            return {
-                "text": response_text
-            }
+                
+                # Get updated conversation
+                conversation = await get_conversation(conversation_id)
+                
+                # Add conversation data to response
+                response_data["conversation"] = {
+                    "id": conversation_id,
+                    "url": f"{API_HOST}/chat/{conversation_id}",
+                    "messages": [
+                        {
+                            "id": msg["id"],
+                            "role": msg["role"],
+                            "content": msg["content"],
+                            "audio_url": get_audio_url(msg["audio_path"]) if msg["audio_path"] else None,
+                            "created_at": msg["created_at"]
+                        }
+                        for msg in conversation["messages"]
+                    ]
+                }
+            else:
+                # Save to temp directory for immediate playback
+                audio_path = save_audio_file(wav_bytes, "temp")
+
+            # Add audio URL to response
+            response_data["audio_url"] = get_audio_url(audio_path)
+            return response_data
             
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
@@ -378,13 +611,14 @@ async def synthesize_speech(
             # Save audio file if conversation_id provided
             audio_path = None
             if conversation_id:
-                audio_path = save_audio_file(wav_bytes, conversation_id)
-                await add_message(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=text,
-                    audio_path=audio_path
-                )
+                try:
+                    audio_path = save_audio_file(wav_bytes, conversation_id)
+                    # Update the last assistant message with the audio path
+                    if audio_path:
+                        await update_last_assistant_message(conversation_id, audio_path)
+                except Exception as e:
+                    logger.error(f"Error saving audio or updating message: {str(e)}")
+                    # Continue even if saving audio fails - we'll still return the audio stream
             
             # Return audio stream
             buffer.seek(0)

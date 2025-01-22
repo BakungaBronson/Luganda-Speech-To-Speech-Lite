@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader2, Settings, Volume2, History, Trash2 } from 'lucide-react'
 import { loadSettings, saveSettings } from './lib/storage'
+import { Toaster } from './components/ui/toaster'
 import {
   Button,
   Slider,
@@ -13,8 +14,6 @@ import {
   Label,
   ScrollArea,
   useToast,
-  ToastProvider,
-  ToastViewport
 } from './components/ui'
 
 interface MediaRecorderError extends Error {
@@ -29,9 +28,23 @@ interface Message {
   id?: number
   role: 'user' | 'assistant'
   content: string
-  audioUrl?: string
-  audio_path?: string
+  audio_url?: string
   created_at?: string
+}
+
+interface ChatResponse {
+  text: string
+  conversation?: {
+    id: number
+    url: string
+    messages: {
+      id: number
+      role: 'user' | 'assistant'
+      content: string
+      audio_url?: string
+      created_at: string
+    }[]
+  }
 }
 
 interface ModelParams {
@@ -164,12 +177,12 @@ function App() {
       const data = await response.json()
       setCurrentConversationId(id)
       
-      // Create audio URLs for messages with audio paths
+          // Create audio URLs for messages with audio paths
       const messagesWithAudio = data.messages.map((msg: Message) => {
-        if (msg.audio_path) {
+        if (msg.audio_url) {
           return {
             ...msg,
-            audioUrl: `${modelParams.api.url}/audio/${msg.audio_path}`
+            audio_url: `${modelParams.api.url}/audio/${msg.audio_url}`
           }
         }
         return msg
@@ -250,7 +263,7 @@ function App() {
   }
 
   const startRecording = async () => {
-    if (!modelParams.api.openAIKey) {
+    if (modelParams.api.useOpenAI && !modelParams.api.openAIKey) {
       showError('Please enter your OpenAI API key in settings')
       return
     }
@@ -350,27 +363,45 @@ function App() {
       }
       setMessages(prev => [...prev, userMessage])
 
-      // Step 2: Process with OpenAI
-      const openaiResponse = await fetch(`${modelParams.api.url}/api/v1/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-OpenAI-Key': modelParams.api.openAIKey,
-        },
-        body: JSON.stringify({
-          text: transcribeData.text,
-          conversation_id: currentConversationId
-        }),
-      })
+      // Step 2: Process with OpenAI if enabled
+      let responseText = transcribeData.text
+      
+      if (modelParams.api.useOpenAI) {
+        const openaiResponse = await fetch(`${modelParams.api.url}/api/v1/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-OpenAI-Key': modelParams.api.openAIKey,
+          },
+          body: JSON.stringify({
+            text: transcribeData.text,
+            conversation_id: currentConversationId
+          }),
+        })
 
-      if (!openaiResponse.ok) {
-        const errorData = await openaiResponse.json().catch(() => ({}))
-        console.error('OpenAI error details:', errorData)
-        throw new Error(errorData.detail || 'Failed to process with OpenAI')
+        if (!openaiResponse.ok) {
+          const errorData = await openaiResponse.json().catch(() => ({}))
+          console.error('OpenAI error details:', errorData)
+          throw new Error(errorData.detail || 'Failed to process with OpenAI')
+        }
+
+        const openaiData: ChatResponse = await openaiResponse.json()
+        responseText = openaiData.text
+
+        // If response includes conversation data, update messages with audio URLs
+        if (openaiData.conversation) {
+          const updatedMessages = openaiData.conversation.messages.map(msg => ({
+            id: msg.id,
+            role: msg.role,
+            content: msg.content,
+            audio_url: msg.audio_url,
+            created_at: msg.created_at
+          }));
+          setMessages(updatedMessages);
+          // Skip synthesize step since audio is already included
+          return;
+        }
       }
-
-      const openaiData = await openaiResponse.json()
-      const responseText = openaiData.text
 
       // Step 3: Synthesize speech
       console.log('Sending text for synthesis:', responseText)
@@ -397,13 +428,18 @@ function App() {
       const responseBlob = await synthesizeResponse.blob()
       const audioUrl = URL.createObjectURL(responseBlob)
 
-      // Add assistant message with audio
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: responseText,
-        audioUrl,
+      // Always add the assistant message to local state
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: responseText,
+            audio_url: audioUrl,
       }
       setMessages(prev => [...prev, assistantMessage])
+      
+      // Optionally refresh the conversation to ensure sync with DB
+      if (currentConversationId) {
+        await loadConversation(currentConversationId)
+      }
 
       // Scroll to bottom
       scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -415,13 +451,9 @@ function App() {
     }
   }
 
-  const playAudio = (audioUrl: string) => {
-    const audio = new Audio(audioUrl)
-    audio.play()
-  }
-
   return (
-    <ToastProvider>
+    <>
+      <Toaster />
       <div className="flex h-screen flex-col">
         <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b bg-background px-4">
           <div className="flex items-center gap-2">
@@ -593,12 +625,20 @@ function App() {
                   }`}
                 >
                   <p>{message.content}</p>
-                  {message.audioUrl && (
+                  {message.audio_url && (
                     <Button
                       variant="secondary"
                       size="sm"
                       className="mt-2"
-                      onClick={() => playAudio(message.audioUrl!)}
+                      onClick={async () => {
+                        try {
+                          const audio = new Audio(message.audio_url!);
+                          await audio.play();
+                        } catch (error) {
+                          console.error('Error playing audio:', error);
+                          showError('Error playing audio. Please try again.');
+                        }
+                      }}
                     >
                       <Volume2 className="w-4 h-4 mr-2" />
                       Play Audio
@@ -637,8 +677,7 @@ function App() {
           </div>
         </div>
       </div>
-      <ToastViewport />
-    </ToastProvider>
+    </>
   )
 }
 

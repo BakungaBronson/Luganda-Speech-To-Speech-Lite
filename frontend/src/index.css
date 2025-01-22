@@ -75,34 +75,33 @@
   }
 }
 
-.chat-container {
-  @apply container mx-auto p-4 max-w-4xl;
+.animate-in {
+  animation: animate-in 0.3s ease-in-out;
 }
 
-.message-container {
-  @apply space-y-4 mb-4;
+.slide-in-from-top-full {
+  transform: translateY(-100%);
 }
 
-.message {
-  @apply p-4 rounded-lg;
+.slide-in-from-bottom-full {
+  transform: translateY(100%);
 }
 
-.user-message {
-  @apply bg-primary text-primary-foreground ml-auto max-w-[80%];
+.fade-out-80 {
+  opacity: 0.2;
 }
 
-.assistant-message {
-  @apply bg-secondary text-secondary-foreground mr-auto max-w-[80%];
+.slide-out-to-right-full {
+  transform: translateX(100%);
 }
 
-.controls {
-  @apply fixed bottom-0 left-0 right-0 p-4 bg-background border-t;
-}
-
-.recording-button {
-  @apply w-12 h-12 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center hover:bg-destructive/90 transition-colors;
-}
-
-.recording-active {
-  @apply animate-pulse;
+@keyframes animate-in {
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

@@ -5,6 +5,12 @@ import os
 from typing import Optional
 from functools import lru_cache
 import torchaudio.transforms as T
+import math
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ModelManager:
     _instance: Optional['ModelManager'] = None
@@ -15,28 +21,107 @@ class ModelManager:
     
     @staticmethod
     def _get_device():
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        elif torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
+        """
+        Determine the best available device for model inference.
+        Handles MPS (Apple Silicon), CUDA, and CPU with proper error checking.
+        """
+        try:
+            # Check for MPS (Apple Silicon)
+            if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                try:
+                    # Test MPS device creation
+                    device = torch.device("mps")
+                    # Verify MPS is working with a small tensor operation
+                    test_tensor = torch.ones(1, device=device)
+                    del test_tensor
+                    print("Using MPS (Apple Silicon) device")
+                    return device
+                except Exception as e:
+                    print(f"MPS available but error occurred: {str(e)}. Falling back to next option.")
+
+            # Check for CUDA
+            if torch.cuda.is_available():
+                try:
+                    device = torch.device("cuda")
+                    # Verify CUDA is working
+                    test_tensor = torch.ones(1, device=device)
+                    del test_tensor
+                    print("Using CUDA device")
+                    return device
+                except Exception as e:
+                    print(f"CUDA available but error occurred: {str(e)}. Falling back to CPU.")
+
+            # Fallback to CPU
+            print("Using CPU device")
+            return torch.device("cpu")
+
+        except Exception as e:
+            print(f"Error during device selection: {str(e)}. Defaulting to CPU.")
+            return torch.device("cpu")
     
     def _load_models(self):
-        # Load Whisper model for STT
-        self._processor = WhisperProcessor.from_pretrained("allandclive/whisper-tiny-luganda-v2")
-        self._model = WhisperForConditionalGeneration.from_pretrained(
-            "allandclive/whisper-tiny-luganda-v2"
-        ).to(self._device)
+        """Load all required models with proper error handling and device management"""
+        os.makedirs("model_cache", exist_ok=True)
         
-        # Load TTS models
-        self._tacotron = Tacotron2.from_hparams(
-            source="Sunbird/sunbird-lug-tts",
-            savedir="luganda_tts"
-        )
-        self._gan = HIFIGAN.from_hparams(
-            source="speechbrain/tts-hifigan-ljspeech",
-            savedir="vocoder"
-        )
+        try:
+            logger.info("Loading Whisper processor...")
+            self._processor = WhisperProcessor.from_pretrained(
+                "allandclive/whisper-tiny-luganda-v2",
+                cache_dir="model_cache",
+            )
+            
+            logger.info(f"Loading Whisper model to {self._device}...")
+            self._model = WhisperForConditionalGeneration.from_pretrained(
+                "allandclive/whisper-tiny-luganda-v2",
+                cache_dir="model_cache",
+            )
+            
+            # Enable memory efficient attention if available
+            if hasattr(self._model.config, "use_attention_mask"):
+                self._model.config.use_attention_mask = True
+            
+            # Move model to device and optimize memory
+            self._model.to(self._device)
+            if self._device.type in ["cuda", "mps"]:
+                logger.info("Converting model to half precision for GPU/MPS optimization")
+                self._model = self._model.half()
+            
+            logger.info("Loading Tacotron2 model...")
+            try:
+                self._tacotron = Tacotron2.from_hparams(
+                    source="Sunbird/sunbird-lug-tts",
+                    savedir="luganda_tts",
+                    run_opts={"device": str(self._device)}
+                )
+            except Exception as e:
+                logger.error(f"Error loading Tacotron2: {str(e)}. Retrying without device specification...")
+                # Fallback: Try loading without device specification
+                self._tacotron = Tacotron2.from_hparams(
+                    source="Sunbird/sunbird-lug-tts",
+                    savedir="luganda_tts"
+                )
+            
+            logger.info("Loading HiFiGAN vocoder...")
+            try:
+                self._gan = HIFIGAN.from_hparams(
+                    source="speechbrain/tts-hifigan-ljspeech",
+                    savedir="vocoder",
+                    run_opts={"device": str(self._device)}
+                )
+            except Exception as e:
+                logger.error(f"Error loading HiFiGAN: {str(e)}. Retrying without device specification...")
+                # Fallback: Try loading without device specification
+                self._gan = HIFIGAN.from_hparams(
+                    source="speechbrain/tts-hifigan-ljspeech",
+                    savedir="vocoder"
+                )
+            
+            logger.info("All models loaded successfully!")
+            
+        except Exception as e:
+            error_msg = f"Critical error loading models: {str(e)}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
     
     @classmethod
     @lru_cache(maxsize=1)
@@ -108,7 +193,9 @@ class ModelManager:
         
         # Apply pitch modification
         if pitch != 1.0:
-            effect = T.PitchShift(sample_rate=22050, n_steps=12 * (pitch - 1))
+            # Calculate semitone shift using logarithmic scale
+            n_steps = 12 * math.log2(pitch)
+            effect = T.PitchShift(sample_rate=22050, n_steps=n_steps)
             waveforms = effect(waveforms)
         
         return waveforms

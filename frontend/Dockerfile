@@ -9,6 +9,9 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
+# Create build info directory with proper permissions
+RUN mkdir -p /app/node_modules/.tmp && chmod 777 /app/node_modules/.tmp
+
 # Copy source code
 COPY . .
 

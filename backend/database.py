@@ -116,6 +116,24 @@ async def list_conversations(skip: int = 0, limit: int = 10):
             for conv in conversations
         ]
 
+async def update_last_assistant_message(conversation_id: int, audio_path: str):
+    """Update the last assistant message with audio path"""
+    async with async_session() as session:
+        # Get the last assistant message for this conversation
+        stmt = select(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.role == 'assistant'
+        ).order_by(Message.created_at.desc())
+        result = await session.execute(stmt)
+        message = result.scalar_one_or_none()
+        
+        if message:
+            message.audio_path = audio_path
+            await session.commit()
+            await session.refresh(message)
+            return message
+        return None
+
 async def delete_conversation(conversation_id: int):
     """Delete a conversation and all its messages"""
     async with async_session() as session:
