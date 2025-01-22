@@ -10,7 +10,10 @@ import {
   SheetTitle,
   SheetTrigger,
   Label,
-  ScrollArea
+  ScrollArea,
+  useToast,
+  ToastProvider,
+  ToastViewport
 } from './components/ui'
 
 interface MediaRecorderError extends Error {
@@ -56,6 +59,7 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const { toast } = useToast()
 
   const [modelParams, setModelParams] = useState<ModelParams>({
     stt: {
@@ -68,7 +72,7 @@ function App() {
     },
     api: {
       url: 'http://localhost:8000',
-      useOpenAI: false,
+      useOpenAI: true,
       openAIKey: ''
     }
   })
@@ -76,6 +80,14 @@ function App() {
   useEffect(() => {
     loadConversations()
   }, [])
+
+  const showError = (message: string) => {
+    toast({
+      variant: "destructive",
+      title: "Error",
+      description: message,
+    })
+  }
 
   const loadConversations = async () => {
     try {
@@ -87,6 +99,7 @@ function App() {
       setConversations(data)
     } catch (error) {
       console.error('Error loading conversations:', error)
+      showError('Failed to load conversations')
     }
   }
 
@@ -104,7 +117,7 @@ function App() {
       await loadConversations()
     } catch (error) {
       console.error('Error starting conversation:', error)
-      alert('Failed to start new conversation')
+      showError('Failed to start new conversation')
     }
   }
 
@@ -132,7 +145,7 @@ function App() {
       setShowHistory(false)
     } catch (error) {
       console.error('Error loading conversation:', error)
-      alert('Failed to load conversation')
+      showError('Failed to load conversation')
     }
   }
 
@@ -151,7 +164,7 @@ function App() {
       await loadConversations()
     } catch (error) {
       console.error('Error deleting conversation:', error)
-      alert('Failed to delete conversation')
+      showError('Failed to delete conversation')
     }
   }
 
@@ -203,6 +216,11 @@ function App() {
   }
 
   const startRecording = async () => {
+    if (!modelParams.api.openAIKey) {
+      showError('Please enter your OpenAI API key in settings')
+      return
+    }
+
     if (isRecording || mediaRecorderRef.current?.state === 'recording') {
       console.warn('Already recording')
       return
@@ -241,7 +259,7 @@ function App() {
         const recorderEvent = event as ExtendedMediaRecorderEvent;
         console.error('MediaRecorder error:', recorderEvent.error)
         stopRecording()
-        alert('Error recording audio: ' + recorderEvent.error.message)
+        showError('Error recording audio: ' + recorderEvent.error.message)
       }
 
       mediaRecorder.onstop = async () => {
@@ -250,7 +268,7 @@ function App() {
           await processAudio(blob)
         } catch (error) {
           console.error('Error processing recorded audio:', error)
-          alert('Error processing audio: ' + (error instanceof Error ? error.message : 'Unknown error'))
+          showError('Error processing audio: ' + (error instanceof Error ? error.message : 'Unknown error'))
         } finally {
           cleanupRecording()
         }
@@ -260,7 +278,7 @@ function App() {
       setIsRecording(true)
     } catch (error) {
       console.error('Error accessing microphone:', error)
-      alert('Error accessing microphone. Please ensure microphone permissions are granted.')
+      showError('Error accessing microphone. Please ensure microphone permissions are granted.')
       cleanupRecording()
     }
   }
@@ -298,30 +316,27 @@ function App() {
       }
       setMessages(prev => [...prev, userMessage])
 
-      // Step 2: Process with OpenAI or local model
-      let responseText = transcribeData.text
-      if (modelParams.api.useOpenAI) {
-        const openaiResponse = await fetch(`${modelParams.api.url}/api/v1/chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-OpenAI-Key': modelParams.api.openAIKey,
-          },
-          body: JSON.stringify({
-            text: transcribeData.text,
-            conversation_id: currentConversationId
-          }),
-        })
+      // Step 2: Process with OpenAI
+      const openaiResponse = await fetch(`${modelParams.api.url}/api/v1/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-OpenAI-Key': modelParams.api.openAIKey,
+        },
+        body: JSON.stringify({
+          text: transcribeData.text,
+          conversation_id: currentConversationId
+        }),
+      })
 
-        if (!openaiResponse.ok) {
-          const errorData = await openaiResponse.json().catch(() => ({}))
-          console.error('OpenAI error details:', errorData)
-          throw new Error(errorData.detail || 'Failed to process with OpenAI')
-        }
-
-        const openaiData = await openaiResponse.json()
-        responseText = openaiData.text
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json().catch(() => ({}))
+        console.error('OpenAI error details:', errorData)
+        throw new Error(errorData.detail || 'Failed to process with OpenAI')
       }
+
+      const openaiData = await openaiResponse.json()
+      const responseText = openaiData.text
 
       // Step 3: Synthesize speech
       console.log('Sending text for synthesis:', responseText)
@@ -358,7 +373,7 @@ function App() {
       scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
     } catch (error) {
       console.error('Error processing audio:', error)
-      alert(error instanceof Error ? error.message : 'Error processing audio. Please try again.')
+      showError(error instanceof Error ? error.message : 'Error processing audio. Please try again.')
     } finally {
       setIsProcessing(false)
     }
@@ -370,60 +385,48 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b bg-background px-4">
-        <div className="flex items-center gap-2">
-          <h1 className="text-lg font-semibold">Luganda Speech-to-Speech</h1>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setShowHistory(true)}
-          >
-            <History className="h-5 w-5" />
-          </Button>
-        </div>
-        <Sheet>
-          <SheetTrigger asChild>
-            <Button variant="ghost" size="icon">
-              <Settings className="h-5 w-5" />
+    <ToastProvider>
+      <div className="flex h-screen flex-col">
+        <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b bg-background px-4">
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold">Luganda Speech-to-Speech</h1>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowHistory(true)}
+            >
+              <History className="h-5 w-5" />
             </Button>
-          </SheetTrigger>
-          <SheetContent>
-            <SheetHeader>
-              <SheetTitle>Model Parameters</SheetTitle>
-              <SheetDescription>
-                Adjust the speech-to-text and text-to-speech parameters.
-              </SheetDescription>
-            </SheetHeader>
-            <div className="grid gap-4 py-4">
-              <div className="space-y-2">
-                <h3 className="font-medium">API Settings</h3>
-                <div className="grid gap-2">
-                  <Label htmlFor="api-url">API URL</Label>
-                  <input
-                    type="text"
-                    id="api-url"
-                    name="api-url"
-                    aria-label="API URL"
-                    placeholder="Enter API URL"
-                    value={modelParams.api.url}
-                    onChange={(e) => handleAPIChange(e.target.value, modelParams.api.useOpenAI)}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </div>
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id="use-openai"
-                    name="use-openai"
-                    aria-label="Use OpenAI API"
-                    checked={modelParams.api.useOpenAI}
-                    onChange={(e) => handleAPIChange(modelParams.api.url, e.target.checked)}
-                    className="h-4 w-4"
-                  />
-                  <Label htmlFor="use-openai">Use OpenAI API</Label>
-                </div>
-                {modelParams.api.useOpenAI && (
+          </div>
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <Settings className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent>
+              <SheetHeader>
+                <SheetTitle>Model Parameters</SheetTitle>
+                <SheetDescription>
+                  Adjust the speech-to-text and text-to-speech parameters.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="grid gap-4 py-4">
+                <div className="space-y-2">
+                  <h3 className="font-medium">API Settings</h3>
+                  <div className="grid gap-2">
+                    <Label htmlFor="api-url">API URL</Label>
+                    <input
+                      type="text"
+                      id="api-url"
+                      name="api-url"
+                      aria-label="API URL"
+                      placeholder="Enter API URL"
+                      value={modelParams.api.url}
+                      onChange={(e) => handleAPIChange(e.target.value, modelParams.api.useOpenAI)}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </div>
                   <div className="grid gap-2">
                     <Label htmlFor="openai-key">OpenAI API Key</Label>
                     <input
@@ -433,172 +436,173 @@ function App() {
                       aria-label="OpenAI API Key"
                       placeholder="Enter OpenAI API Key"
                       value={modelParams.api.openAIKey}
-                      onChange={(e) => handleAPIChange(modelParams.api.url, modelParams.api.useOpenAI, e.target.value)}
+                      onChange={(e) => handleAPIChange(modelParams.api.url, true, e.target.value)}
                       className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                     />
                   </div>
-                )}
+                </div>
+                <div className="space-y-2">
+                  <h3 className="font-medium">Speech-to-Text</h3>
+                  <div className="grid gap-2">
+                    <Label>Beam Size ({modelParams.stt.beamSize})</Label>
+                    <Slider
+                      value={[modelParams.stt.beamSize]}
+                      min={1}
+                      max={10}
+                      step={1}
+                      onValueChange={(value: SliderValue) =>
+                        handleSliderChange('stt', 'beamSize', value)
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Temperature ({modelParams.stt.temperature})</Label>
+                    <Slider
+                      value={[modelParams.stt.temperature]}
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      onValueChange={(value: SliderValue) =>
+                        handleSliderChange('stt', 'temperature', value)
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <h3 className="font-medium">Text-to-Speech</h3>
+                  <div className="grid gap-2">
+                    <Label>Speed ({modelParams.tts.speed}x)</Label>
+                    <Slider
+                      value={[modelParams.tts.speed]}
+                      min={0.5}
+                      max={2}
+                      step={0.1}
+                      onValueChange={(value: SliderValue) =>
+                        handleSliderChange('tts', 'speed', value)
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Pitch ({modelParams.tts.pitch}x)</Label>
+                    <Slider
+                      value={[modelParams.tts.pitch]}
+                      min={0.5}
+                      max={2}
+                      step={0.1}
+                      onValueChange={(value: SliderValue) =>
+                        handleSliderChange('tts', 'pitch', value)
+                      }
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="space-y-2">
-                <h3 className="font-medium">Speech-to-Text</h3>
-                <div className="grid gap-2">
-                  <Label>Beam Size ({modelParams.stt.beamSize})</Label>
-                  <Slider
-                    value={[modelParams.stt.beamSize]}
-                    min={1}
-                    max={10}
-                    step={1}
-                    onValueChange={(value: SliderValue) =>
-                      handleSliderChange('stt', 'beamSize', value)
-                    }
-                  />
+            </SheetContent>
+          </Sheet>
+        </header>
+
+        <Sheet open={showHistory} onOpenChange={setShowHistory}>
+          <SheetContent side="left">
+            <SheetHeader>
+              <SheetTitle>Conversation History</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4 space-y-2">
+              <Button
+                onClick={() => {
+                  startNewConversation()
+                  setShowHistory(false)
+                }}
+                className="w-full"
+              >
+                New Conversation
+              </Button>
+              {conversations.map((conv) => (
+                <div
+                  key={conv.id}
+                  className="flex items-center justify-between rounded-lg border p-2"
+                >
+                  <Button
+                    variant="ghost"
+                    onClick={() => loadConversation(conv.id)}
+                    className="flex-1 justify-start"
+                  >
+                    {new Date(conv.started_at).toLocaleString()}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => deleteConversation(conv.id)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
-                <div className="grid gap-2">
-                  <Label>Temperature ({modelParams.stt.temperature})</Label>
-                  <Slider
-                    value={[modelParams.stt.temperature]}
-                    min={0}
-                    max={1}
-                    step={0.1}
-                    onValueChange={(value: SliderValue) =>
-                      handleSliderChange('stt', 'temperature', value)
-                    }
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <h3 className="font-medium">Text-to-Speech</h3>
-                <div className="grid gap-2">
-                  <Label>Speed ({modelParams.tts.speed}x)</Label>
-                  <Slider
-                    value={[modelParams.tts.speed]}
-                    min={0.5}
-                    max={2}
-                    step={0.1}
-                    onValueChange={(value: SliderValue) =>
-                      handleSliderChange('tts', 'speed', value)
-                    }
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Pitch ({modelParams.tts.pitch}x)</Label>
-                  <Slider
-                    value={[modelParams.tts.pitch]}
-                    min={0.5}
-                    max={2}
-                    step={0.1}
-                    onValueChange={(value: SliderValue) =>
-                      handleSliderChange('tts', 'pitch', value)
-                    }
-                  />
-                </div>
-              </div>
+              ))}
             </div>
           </SheetContent>
         </Sheet>
-      </header>
 
-      <Sheet open={showHistory} onOpenChange={setShowHistory}>
-        <SheetContent side="left">
-          <SheetHeader>
-            <SheetTitle>Conversation History</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4 space-y-2">
-            <Button
-              onClick={() => {
-                startNewConversation()
-                setShowHistory(false)
-              }}
-              className="w-full"
-            >
-              New Conversation
-            </Button>
-            {conversations.map((conv) => (
+        <ScrollArea className="flex-1 p-4">
+          <div className="space-y-4 max-w-2xl mx-auto">
+            {messages.map((message, index) => (
               <div
-                key={conv.id}
-                className="flex items-center justify-between rounded-lg border p-2"
-              >
-                <Button
-                  variant="ghost"
-                  onClick={() => loadConversation(conv.id)}
-                  className="flex-1 justify-start"
-                >
-                  {new Date(conv.started_at).toLocaleString()}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => deleteConversation(conv.id)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <ScrollArea className="flex-1 p-4">
-        <div className="space-y-4 max-w-2xl mx-auto">
-          {messages.map((message, index) => (
-            <div
-              key={index}
-              className={`flex ${
-                message.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
-              <div
-                className={`rounded-lg px-4 py-2 max-w-[80%] ${
-                  message.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted'
+                key={index}
+                className={`flex ${
+                  message.role === 'user' ? 'justify-end' : 'justify-start'
                 }`}
               >
-                <p>{message.content}</p>
-                {message.audioUrl && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="mt-2"
-                    onClick={() => playAudio(message.audioUrl!)}
-                  >
-                    <Volume2 className="w-4 h-4 mr-2" />
-                    Play Audio
-                  </Button>
-                )}
+                <div
+                  className={`rounded-lg px-4 py-2 max-w-[80%] ${
+                    message.role === 'user'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted'
+                  }`}
+                >
+                  <p>{message.content}</p>
+                  {message.audioUrl && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => playAudio(message.audioUrl!)}
+                    >
+                      <Volume2 className="w-4 h-4 mr-2" />
+                      Play Audio
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-          <div ref={scrollRef} />
-        </div>
-      </ScrollArea>
+            ))}
+            <div ref={scrollRef} />
+          </div>
+        </ScrollArea>
 
-      <div className="sticky bottom-0 border-t bg-background p-4">
-        <div className="flex justify-center">
-          {isProcessing ? (
-            <Button disabled className="w-12 h-12 rounded-full">
-              <Loader2 className="w-6 h-6 animate-spin" />
-            </Button>
-          ) : isRecording ? (
-            <Button
-              onClick={stopRecording}
-              variant="destructive"
-              className="w-12 h-12 rounded-full"
-            >
-              <Square className="w-6 h-6" />
-            </Button>
-          ) : (
-            <Button
-              onClick={startRecording}
-              variant="default"
-              className="w-12 h-12 rounded-full"
-            >
-              <Mic className="w-6 h-6" />
-            </Button>
-          )}
+        <div className="sticky bottom-0 border-t bg-background p-4">
+          <div className="flex justify-center">
+            {isProcessing ? (
+              <Button disabled className="w-12 h-12 rounded-full">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </Button>
+            ) : isRecording ? (
+              <Button
+                onClick={stopRecording}
+                variant="destructive"
+                className="w-12 h-12 rounded-full"
+              >
+                <Square className="w-6 h-6" />
+              </Button>
+            ) : (
+              <Button
+                onClick={startRecording}
+                variant="default"
+                className="w-12 h-12 rounded-full"
+              >
+                <Mic className="w-6 h-6" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+      <ToastViewport />
+    </ToastProvider>
   )
 }
 
