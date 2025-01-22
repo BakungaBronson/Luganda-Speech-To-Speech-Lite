@@ -1,7 +1,8 @@
 import warnings
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Request, Header
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from typing import Optional
 import magic
 import torch
@@ -18,6 +19,9 @@ import soundfile as sf
 import tempfile
 import json
 import openai
+import time
+from database import init_db, get_session, create_conversation, add_message, get_conversation, list_conversations, delete_conversation
+from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
 
@@ -28,10 +32,17 @@ logger = logging.getLogger(__name__)
 # Configure default OpenAI key from environment
 DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
+# Configure audio storage
+AUDIO_DIR = "audio_files"
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
 # Ignore warnings from finetuned model
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Luganda Speech-to-Speech API")
+
+# Mount audio files directory
+app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 
 # Enable CORS
 app.add_middleware(
@@ -56,7 +67,29 @@ ALLOWED_MIMETYPES = (
 SYSTEM_PROMPT = """You are a knowledgeable Luganda teacher with knowledge of both English and Luganda. 
 The user will send you text in Luganda and you will respond in Luganda as well. 
 The Luganda given comes from a speech to text output and will not be exact to the word, 
-so use the nearest word to it to generate a response. Your responses must be concise."""
+so use the nearest word to it to generate a response."""
+
+def save_audio_file(audio_data: bytes, conversation_id: int) -> str:
+    """Save audio file and return its path"""
+    # Create conversation directory if it doesn't exist
+    conv_dir = os.path.join(AUDIO_DIR, str(conversation_id))
+    os.makedirs(conv_dir, exist_ok=True)
+    
+    # Generate unique filename
+    filename = f"{int(time.time())}.wav"
+    filepath = os.path.join(conv_dir, filename)
+    
+    # Save file
+    with open(filepath, 'wb') as f:
+        f.write(audio_data)
+    
+    # Return relative path from AUDIO_DIR
+    return os.path.join(str(conversation_id), filename)
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup"""
+    await init_db()
 
 def convert_audio_to_wav(input_bytes):
     """Convert audio bytes to WAV format using ffmpeg"""
@@ -97,14 +130,59 @@ async def root():
         "endpoints": {
             "speech_to_text": "/api/v1/transcribe",
             "text_to_speech": "/api/v1/synthesize",
-            "chat": "/api/v1/chat"
+            "chat": "/api/v1/chat",
+            "conversations": "/api/v1/conversations"
         }
     }
+
+@app.post("/api/v1/conversations")
+async def start_conversation(session: AsyncSession = Depends(get_session)):
+    """Start a new conversation"""
+    conversation = await create_conversation()
+    return {"conversation_id": conversation.id}
+
+@app.get("/api/v1/conversations")
+async def get_conversations(
+    skip: int = 0,
+    limit: int = 10,
+    session: AsyncSession = Depends(get_session)
+):
+    """List all conversations"""
+    return await list_conversations(skip=skip, limit=limit)
+
+@app.get("/api/v1/conversations/{conversation_id}")
+async def get_conversation_by_id(
+    conversation_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get a specific conversation"""
+    conversation = await get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+@app.delete("/api/v1/conversations/{conversation_id}")
+async def delete_conversation_by_id(
+    conversation_id: int,
+    session: AsyncSession = Depends(get_session)
+):
+    """Delete a conversation"""
+    # Delete audio files
+    conv_dir = os.path.join(AUDIO_DIR, str(conversation_id))
+    if os.path.exists(conv_dir):
+        for file in os.listdir(conv_dir):
+            os.remove(os.path.join(conv_dir, file))
+        os.rmdir(conv_dir)
+    
+    await delete_conversation(conversation_id)
+    return {"status": "success"}
 
 @app.post("/api/v1/transcribe")
 async def transcribe_audio(
     file: UploadFile,
-    config: str = Form(None)
+    config: str = Form(None),
+    conversation_id: Optional[int] = Form(None),
+    session: AsyncSession = Depends(get_session)
 ):
     """Transcribe audio to text"""
     if not file:
@@ -134,6 +212,14 @@ async def transcribe_audio(
                 sample_rate=sr
             )
             
+            # Save message if conversation_id provided
+            if conversation_id:
+                await add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=transcription
+                )
+            
             return {
                 "text": transcription,
                 "language": "lg"
@@ -160,7 +246,8 @@ async def transcribe_audio(
 @app.post("/api/v1/chat")
 async def chat(
     request: Request,
-    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key")
+    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key"),
+    session: AsyncSession = Depends(get_session)
 ):
     """Process text with OpenAI API"""
     try:
@@ -169,6 +256,8 @@ async def chat(
         logger.info(f"Chat request data: {data}")
         
         text = data.get('text')
+        conversation_id = data.get('conversation_id')
+        
         if not text:
             logger.error("No text provided in request")
             raise HTTPException(status_code=400, detail="No text provided")
@@ -188,7 +277,7 @@ async def chat(
             # Call OpenAI API
             logger.info(f"Sending to OpenAI: {text}")
             response = openai.ChatCompletion.create(
-                model="gpt-4o",
+                model="gpt-4",
                 messages=[
                     {
                         "role": "system",
@@ -208,6 +297,14 @@ async def chat(
             
             response_text = response['choices'][0]['message']['content']
             logger.info(f"OpenAI response: {response_text}")
+            
+            # Save message if conversation_id provided
+            if conversation_id:
+                await add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=response_text
+                )
             
             return {
                 "text": response_text
@@ -233,7 +330,10 @@ async def chat(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/synthesize")
-async def synthesize_speech(request: Request):
+async def synthesize_speech(
+    request: Request,
+    session: AsyncSession = Depends(get_session)
+):
     """Convert text to speech"""
     try:
         # Log raw request body
@@ -245,6 +345,8 @@ async def synthesize_speech(request: Request):
         logger.info(f"Parsed request data: {data}")
         
         text = data.get('text')
+        conversation_id = data.get('conversation_id')
+        
         if not text:
             logger.error("No text provided in request")
             raise HTTPException(status_code=400, detail="No text provided")
@@ -264,10 +366,24 @@ async def synthesize_speech(request: Request):
             buffer = io.BytesIO()
             logger.info("Converting waveforms to WAV format")
             
-            # Save as WAV file (waveforms is already 2D after squeeze in model_manager)
+            # Save as WAV file
             torchaudio.save(buffer, waveforms, 22050, format='wav')
             buffer.seek(0)
+            wav_bytes = buffer.read()
             
+            # Save audio file if conversation_id provided
+            audio_path = None
+            if conversation_id:
+                audio_path = save_audio_file(wav_bytes, conversation_id)
+                await add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=text,
+                    audio_path=audio_path
+                )
+            
+            # Return audio stream
+            buffer.seek(0)
             logger.info("Successfully generated speech audio")
             return StreamingResponse(
                 buffer,

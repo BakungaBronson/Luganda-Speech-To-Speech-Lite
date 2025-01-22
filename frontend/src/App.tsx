@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react'
-import { Mic, Square, Loader2, Settings, Volume2 } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Mic, Square, Loader2, Settings, Volume2, History, Trash2 } from 'lucide-react'
 import {
   Button,
   Slider,
@@ -22,9 +22,12 @@ interface ExtendedMediaRecorderEvent extends Event {
 }
 
 interface Message {
+  id?: number
   role: 'user' | 'assistant'
   content: string
   audioUrl?: string
+  audio_path?: string
+  created_at?: string
 }
 
 interface ModelParams {
@@ -47,6 +50,9 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isRecording, setIsRecording] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [currentConversationId, setCurrentConversationId] = useState<number | null>(null)
+  const [conversations, setConversations] = useState<{ id: number, started_at: string }[]>([])
+  const [showHistory, setShowHistory] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -66,6 +72,88 @@ function App() {
       openAIKey: ''
     }
   })
+
+  useEffect(() => {
+    loadConversations()
+  }, [])
+
+  const loadConversations = async () => {
+    try {
+      const response = await fetch(`${modelParams.api.url}/api/v1/conversations`)
+      if (!response.ok) {
+        throw new Error('Failed to load conversations')
+      }
+      const data = await response.json()
+      setConversations(data)
+    } catch (error) {
+      console.error('Error loading conversations:', error)
+    }
+  }
+
+  const startNewConversation = async () => {
+    try {
+      const response = await fetch(`${modelParams.api.url}/api/v1/conversations`, {
+        method: 'POST'
+      })
+      if (!response.ok) {
+        throw new Error('Failed to start conversation')
+      }
+      const data = await response.json()
+      setCurrentConversationId(data.conversation_id)
+      setMessages([])
+      await loadConversations()
+    } catch (error) {
+      console.error('Error starting conversation:', error)
+      alert('Failed to start new conversation')
+    }
+  }
+
+  const loadConversation = async (id: number) => {
+    try {
+      const response = await fetch(`${modelParams.api.url}/api/v1/conversations/${id}`)
+      if (!response.ok) {
+        throw new Error('Failed to load conversation')
+      }
+      const data = await response.json()
+      setCurrentConversationId(id)
+      
+      // Create audio URLs for messages with audio paths
+      const messagesWithAudio = data.messages.map((msg: Message) => {
+        if (msg.audio_path) {
+          return {
+            ...msg,
+            audioUrl: `${modelParams.api.url}/audio/${msg.audio_path}`
+          }
+        }
+        return msg
+      })
+      
+      setMessages(messagesWithAudio)
+      setShowHistory(false)
+    } catch (error) {
+      console.error('Error loading conversation:', error)
+      alert('Failed to load conversation')
+    }
+  }
+
+  const deleteConversation = async (id: number) => {
+    try {
+      const response = await fetch(`${modelParams.api.url}/api/v1/conversations/${id}`, {
+        method: 'DELETE'
+      })
+      if (!response.ok) {
+        throw new Error('Failed to delete conversation')
+      }
+      if (currentConversationId === id) {
+        setCurrentConversationId(null)
+        setMessages([])
+      }
+      await loadConversations()
+    } catch (error) {
+      console.error('Error deleting conversation:', error)
+      alert('Failed to delete conversation')
+    }
+  }
 
   type SliderValue = [number]
 
@@ -118,6 +206,10 @@ function App() {
     if (isRecording || mediaRecorderRef.current?.state === 'recording') {
       console.warn('Already recording')
       return
+    }
+
+    if (!currentConversationId) {
+      await startNewConversation()
     }
 
     try {
@@ -174,10 +266,16 @@ function App() {
   }
 
   const processAudio = async (inputBlob: Blob) => {
+    if (!currentConversationId) {
+      console.error('No active conversation')
+      return
+    }
+
     setIsProcessing(true)
     try {
       const formData = new FormData()
       formData.append('file', inputBlob)
+      formData.append('conversation_id', currentConversationId.toString())
 
       // Step 1: Transcribe audio
       const transcribeResponse = await fetch(`${modelParams.api.url}/api/v1/transcribe`, {
@@ -207,10 +305,11 @@ function App() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-OpenAI-Key': modelParams.api.openAIKey
+            'X-OpenAI-Key': modelParams.api.openAIKey,
           },
           body: JSON.stringify({
-            text: transcribeData.text
+            text: transcribeData.text,
+            conversation_id: currentConversationId
           }),
         })
 
@@ -233,7 +332,8 @@ function App() {
           'Accept': 'audio/wav',
         },
         body: JSON.stringify({
-          text: responseText
+          text: responseText,
+          conversation_id: currentConversationId
         }),
       })
 
@@ -272,7 +372,16 @@ function App() {
   return (
     <div className="flex h-screen flex-col">
       <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b bg-background px-4">
-        <h1 className="text-lg font-semibold">Luganda Speech-to-Speech</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-semibold">Luganda Speech-to-Speech</h1>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setShowHistory(true)}
+          >
+            <History className="h-5 w-5" />
+          </Button>
+        </div>
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon">
@@ -388,6 +497,46 @@ function App() {
           </SheetContent>
         </Sheet>
       </header>
+
+      <Sheet open={showHistory} onOpenChange={setShowHistory}>
+        <SheetContent side="left">
+          <SheetHeader>
+            <SheetTitle>Conversation History</SheetTitle>
+          </SheetHeader>
+          <div className="mt-4 space-y-2">
+            <Button
+              onClick={() => {
+                startNewConversation()
+                setShowHistory(false)
+              }}
+              className="w-full"
+            >
+              New Conversation
+            </Button>
+            {conversations.map((conv) => (
+              <div
+                key={conv.id}
+                className="flex items-center justify-between rounded-lg border p-2"
+              >
+                <Button
+                  variant="ghost"
+                  onClick={() => loadConversation(conv.id)}
+                  className="flex-1 justify-start"
+                >
+                  {new Date(conv.started_at).toLocaleString()}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => deleteConversation(conv.id)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-4 max-w-2xl mx-auto">
