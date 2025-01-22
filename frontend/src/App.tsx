@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader2, Settings, Volume2, History, Trash2 } from 'lucide-react'
+import { loadSettings, saveSettings } from './lib/storage'
 import {
   Button,
   Slider,
@@ -78,8 +79,41 @@ function App() {
   })
 
   useEffect(() => {
-    loadConversations()
+    const loadStoredSettings = async () => {
+      const settings = await loadSettings();
+      if (settings) {
+        setModelParams(prev => ({
+          ...prev,
+          api: {
+            ...prev.api,
+            url: settings.apiUrl || prev.api.url,
+            openAIKey: settings.openAIKey || prev.api.openAIKey
+          },
+          stt: {
+            ...prev.stt,
+            ...(settings.stt || {})
+          },
+          tts: {
+            ...prev.tts,
+            ...(settings.tts || {})
+          }
+        }));
+      }
+    };
+    
+    loadStoredSettings();
+    loadConversations();
   }, [])
+
+  // Save settings when they change
+  useEffect(() => {
+    saveSettings({
+      apiUrl: modelParams.api.url,
+      openAIKey: modelParams.api.openAIKey,
+      stt: modelParams.stt,
+      tts: modelParams.tts
+    });
+  }, [modelParams])
 
   const showError = (message: string) => {
     toast({
@@ -348,7 +382,9 @@ function App() {
         },
         body: JSON.stringify({
           text: responseText,
-          conversation_id: currentConversationId
+          conversation_id: currentConversationId,
+          speed: modelParams.tts.speed,
+          pitch: modelParams.tts.pitch
         }),
       })
 

@@ -4,6 +4,7 @@ from speechbrain.inference import Tacotron2, HIFIGAN
 import os
 from typing import Optional
 from functools import lru_cache
+import torchaudio.transforms as T
 
 class ModelManager:
     _instance: Optional['ModelManager'] = None
@@ -89,8 +90,8 @@ class ModelManager:
         
         return transcription
     
-    def synthesize_speech(self, text):
-        """Convert text to speech using Tacotron2 and HiFiGAN"""
+    def synthesize_speech(self, text, speed=1.0, pitch=1.0):
+        """Convert text to speech using Tacotron2 and HiFiGAN with speed and pitch control"""
         # Generate mel spectrogram
         mel_output, mel_length, alignment = self.tacotron.encode_text(text)
         
@@ -99,5 +100,15 @@ class ModelManager:
         
         # Squeeze to get correct dimensions (batch, time)
         waveforms = waveforms.squeeze(1)  # Remove the channel dimension
+        
+        # Apply speed modification
+        if speed != 1.0:
+            effect = T.Speed(speed)
+            waveforms = effect(waveforms)
+        
+        # Apply pitch modification
+        if pitch != 1.0:
+            effect = T.PitchShift(sample_rate=22050, n_steps=12 * (pitch - 1))
+            waveforms = effect(waveforms)
         
         return waveforms

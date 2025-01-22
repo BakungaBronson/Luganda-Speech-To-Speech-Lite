@@ -357,9 +357,13 @@ async def synthesize_speech(
             # Get model manager instance
             model_manager = ModelManager.get_instance()
             
-            # Generate speech
-            logger.info("Starting speech synthesis")
-            waveforms = model_manager.synthesize_speech(text)
+            # Get synthesis parameters
+            speed = float(data.get('speed', 1.0))
+            pitch = float(data.get('pitch', 1.0))
+            
+            # Generate speech with parameters
+            logger.info(f"Starting speech synthesis with speed={speed}, pitch={pitch}")
+            waveforms = model_manager.synthesize_speech(text, speed=speed, pitch=pitch)
             logger.info(f"Generated waveforms shape: {waveforms.shape}")
             
             # Convert to bytes
