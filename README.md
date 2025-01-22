@@ -23,7 +23,7 @@ A lightweight Luganda speech-to-speech system with support for Apple Silicon GPU
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/BakungaBronson/Luganda-Speech-To-Speech-Lite.git
    cd luganda-speech-to-speech-lite
    ```
 
