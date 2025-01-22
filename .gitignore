@@ -81,3 +81,6 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Database files
+*.db
