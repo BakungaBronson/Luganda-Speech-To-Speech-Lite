@@ -13,6 +13,14 @@ import {
   ScrollArea
 } from './components/ui'
 
+interface MediaRecorderError extends Error {
+  name: string;
+}
+
+interface ExtendedMediaRecorderEvent extends Event {
+  error: MediaRecorderError;
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -65,32 +73,40 @@ function App() {
     }))
   }
 
+  const cleanupRecording = () => {
+    if (mediaRecorderRef.current?.stream) {
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop())
+    }
+    mediaRecorderRef.current = null
+    audioChunksRef.current = []
+    setIsRecording(false)
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+  }
+
   const startRecording = async () => {
+    if (isRecording || mediaRecorderRef.current?.state === 'recording') {
+      console.warn('Already recording')
+      return
+    }
+
     try {
+      cleanupRecording()
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // Try different audio formats in order of preference
-      const mimeTypes = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/ogg;codecs=opus',
-        'audio/mp4'
-      ]
-
-      let selectedMimeType = ''
-      for (const mimeType of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          selectedMimeType = mimeType
-          break
-        }
-      }
-
-      if (!selectedMimeType) {
-        throw new Error('No supported audio format found')
-      }
-
+      
+      // Use WebM format for best compatibility with ffmpeg
       const options = {
-        mimeType: selectedMimeType,
+        mimeType: 'audio/webm',
         audioBitsPerSecond: 16000
+      }
+
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        throw new Error('WebM audio recording is not supported in this browser')
       }
       
       const mediaRecorder = new MediaRecorder(stream, options)
@@ -103,21 +119,22 @@ function App() {
         }
       }
 
-      mediaRecorder.onerror = (event) => {
-        console.error('MediaRecorder error:', event.error)
+      mediaRecorder.onerror = (event: Event) => {
+        const recorderEvent = event as ExtendedMediaRecorderEvent;
+        console.error('MediaRecorder error:', recorderEvent.error)
         stopRecording()
-        alert('Error recording audio: ' + event.error.message)
+        alert('Error recording audio: ' + recorderEvent.error.message)
       }
-
-      // Start recording in 100ms chunks to get more frequent updates
-      mediaRecorder.start(100)
 
       mediaRecorder.onstop = async () => {
         try {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
+          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
           await processAudio(blob)
+        } catch (error) {
+          console.error('Error processing recorded audio:', error)
+          alert('Error processing audio: ' + (error instanceof Error ? error.message : 'Unknown error'))
         } finally {
-          stream.getTracks().forEach(track => track.stop())
+          cleanupRecording()
         }
       }
 
@@ -126,30 +143,15 @@ function App() {
     } catch (error) {
       console.error('Error accessing microphone:', error)
       alert('Error accessing microphone. Please ensure microphone permissions are granted.')
-    }
-  }
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop()
-      setIsRecording(false)
+      cleanupRecording()
     }
   }
 
   const processAudio = async (inputBlob: Blob) => {
     setIsProcessing(true)
     try {
-      // Create form data with input audio
-      // Create form data with input audio and config
       const formData = new FormData()
-      formData.append('file', inputBlob, 'audio.wav')
-      
-      // Convert config to string and append as form field
-      const configJson = JSON.stringify({
-        beam_size: modelParams.stt.beamSize,
-        temperature: modelParams.stt.temperature,
-      })
-      formData.append('config', configJson)
+      formData.append('file', inputBlob)
 
       // Step 1: Transcribe audio
       const transcribeResponse = await fetch('http://localhost:8000/api/v1/transcribe', {
@@ -158,16 +160,10 @@ function App() {
       })
       
       if (!transcribeResponse.ok) {
-        const errorData = await transcribeResponse.json().catch(() => ({}))
-        throw new Error(
-          errorData.detail || 'Failed to transcribe audio'
-        )
+        throw new Error('Failed to transcribe audio')
       }
       
       const transcribeData = await transcribeResponse.json()
-      if (!transcribeData.text) {
-        throw new Error('No transcription received')
-      }
 
       // Add user message
       const userMessage: Message = {
@@ -177,34 +173,28 @@ function App() {
       setMessages(prev => [...prev, userMessage])
 
       // Step 2: Synthesize speech
+      console.log('Sending text for synthesis:', transcribeData.text)
       const synthesizeResponse = await fetch('http://localhost:8000/api/v1/synthesize', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'audio/wav',
         },
         body: JSON.stringify({
-          text: transcribeData.text,
-          config: {
-            speed: modelParams.tts.speed,
-            pitch: modelParams.tts.pitch,
-          },
+          text: transcribeData.text
         }),
       })
 
       if (!synthesizeResponse.ok) {
         const errorData = await synthesizeResponse.json().catch(() => ({}))
-        throw new Error(
-          errorData.detail || 'Failed to synthesize speech'
-        )
+        console.error('Synthesis error details:', errorData)
+        throw new Error(errorData.detail || 'Failed to synthesize speech')
       }
 
       const responseBlob = await synthesizeResponse.blob()
-      if (responseBlob.size === 0) {
-        throw new Error('Received empty audio response')
-      }
       const audioUrl = URL.createObjectURL(responseBlob)
 
-      // Add assistant message
+      // Add assistant message with audio
       const assistantMessage: Message = {
         role: 'assistant',
         content: transcribeData.text,

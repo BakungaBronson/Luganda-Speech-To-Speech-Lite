@@ -65,32 +65,23 @@ class ModelManager:
     def gan(self):
         return self._gan
     
-    def transcribe_audio(self, audio_input, sample_rate=16000, beam_size=5, temperature=0.0):
-        """Transcribe audio using Whisper model with configurable parameters"""
+    def transcribe_audio(self, audio_input, sample_rate=16000):
+        """Transcribe audio using Whisper model"""
+        # Process audio input
         input_features = self.processor(
             audio_input,
             sampling_rate=sample_rate,
             return_tensors="pt"
         ).input_features.to(self.device)
         
-        # Create attention mask
-        attention_mask = torch.ones_like(input_features).to(self.device)
-        
-        # Configure generation parameters
-        generate_kwargs = {
-            "attention_mask": attention_mask,
-            "num_beams": beam_size,
-            "temperature": temperature if temperature > 0 else None,
-            "do_sample": temperature > 0,
-            "language": "lg",  # Luganda language code
-            "task": "transcribe"
-        }
-        
+        # Generate token ids without specifying language
         generated_ids = self.model.generate(
             input_features,
-            **generate_kwargs
+            attention_mask=torch.ones_like(input_features),
+            forced_decoder_ids=None
         )
         
+        # Decode token ids to text
         transcription = self.processor.batch_decode(
             generated_ids,
             skip_special_tokens=True
@@ -98,29 +89,15 @@ class ModelManager:
         
         return transcription
     
-    def synthesize_speech(self, text, speed=1.0, pitch=1.0):
-        """Convert text to speech with configurable parameters"""
+    def synthesize_speech(self, text):
+        """Convert text to speech using Tacotron2 and HiFiGAN"""
         # Generate mel spectrogram
         mel_output, mel_length, alignment = self.tacotron.encode_text(text)
-        
-        # Apply pitch modification if needed
-        if pitch != 1.0:
-            mel_output = mel_output * pitch
         
         # Generate waveform
         waveforms = self.gan.decode_batch(mel_output)
         
-        # Apply speed modification if needed
-        if speed != 1.0:
-            waveform = waveforms.squeeze(1)
-            old_length = waveform.shape[0]
-            new_length = int(old_length / speed)
-            waveform = torch.nn.functional.interpolate(
-                waveform.unsqueeze(0).unsqueeze(0),
-                size=new_length,
-                mode='linear',
-                align_corners=False
-            ).squeeze()
-            return waveform
+        # Squeeze to get correct dimensions (batch, time)
+        waveforms = waveforms.squeeze(1)  # Remove the channel dimension
         
-        return waveforms.squeeze(1)
+        return waveforms

@@ -1,20 +1,30 @@
-import torch
-from fastapi import FastAPI, UploadFile, HTTPException, BackgroundTasks, Form
+import warnings
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
-import os
-import io
-import json
+import magic
+import torch
 import librosa
-import torchaudio
 import logging
+import os
+import subprocess
+from dotenv import load_dotenv
+from functools import lru_cache
 from model_manager import ModelManager
+import torchaudio
+import io
+import soundfile as sf
+import tempfile
+import json
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Ignore warnings from finetuned model
+warnings.filterwarnings('ignore')
 
 app = FastAPI(title="Luganda Speech-to-Speech API")
 
@@ -27,28 +37,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class TranscriptionConfig(BaseModel):
-    beam_size: int = Field(default=5, ge=1, le=10)
-    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+ALLOWED_MIMETYPES = (
+    "audio/aac",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/webm",
+    "video/webm",
+    "audio/mp4",
+    "audio/wav",
+    "audio/x-wav"
+)
 
-class SynthesisConfig(BaseModel):
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
-    pitch: float = Field(default=1.0, ge=0.5, le=2.0)
+def convert_audio_to_wav(input_bytes):
+    """Convert audio bytes to WAV format using ffmpeg"""
+    with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as input_file:
+        input_file.write(input_bytes)
+        input_path = input_file.name
 
-class AudioTranscriptionResponse(BaseModel):
-    text: str
-    language: str = "lg"
-    confidence: float
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the model manager on startup"""
+    output_path = input_path + '.wav'
     try:
-        ModelManager.get_instance()
-        logger.info(f"Models loaded successfully. Using device: {ModelManager.get_instance().device}")
-    except Exception as e:
-        logger.error(f"Failed to load models: {e}")
-        raise
+        subprocess.run([
+            'ffmpeg', '-y',
+            '-i', input_path,
+            '-acodec', 'pcm_s16le',
+            '-ar', '16000',
+            '-ac', '1',
+            output_path
+        ], check=True, capture_output=True)
+
+        with open(output_path, 'rb') as f:
+            wav_bytes = f.read()
+
+        return wav_bytes
+
+    finally:
+        # Clean up temporary files
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        if os.path.exists(output_path):
+            os.remove(output_path)
 
 @app.get("/")
 async def root():
@@ -59,157 +86,129 @@ async def root():
         "device": str(model_manager.device),
         "endpoints": {
             "speech_to_text": "/api/v1/transcribe",
-            "text_to_speech": "/api/v1/synthesize",
-            "openai_compatible": "/v1/chat/completions"
+            "text_to_speech": "/api/v1/synthesize"
         }
     }
 
-@app.post("/api/v1/transcribe", response_model=AudioTranscriptionResponse)
+@app.post("/api/v1/transcribe")
 async def transcribe_audio(
     file: UploadFile,
-    config: Optional[str] = Form(None)
+    config: str = Form(None)
 ):
-    """Transcribe audio to text with configurable parameters"""
+    """Transcribe audio to text"""
     if not file:
         raise HTTPException(status_code=400, detail="No audio file provided")
     
     try:
-        # Parse config if provided
-        transcription_config = TranscriptionConfig()
-        if config:
-            try:
-                config_dict = json.loads(config)
-                transcription_config = TranscriptionConfig(**config_dict)
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid config JSON")
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=str(e))
-
-        from pydub import AudioSegment
-        import tempfile
-        import shutil
-
-        # Create temporary directory
-        temp_dir = tempfile.mkdtemp()
-        input_path = os.path.join(temp_dir, "input.webm")
-        output_path = os.path.join(temp_dir, "output.wav")
+        # Read audio file
+        content = await file.read()
         
         try:
-            # Save uploaded file temporarily
-            content = await file.read()
-            if len(content) == 0:
-                raise HTTPException(status_code=400, detail="Empty audio file received")
-                
-            with open(input_path, "wb") as temp_file:
-                temp_file.write(content)
+            # Convert to WAV first
+            wav_content = convert_audio_to_wav(content)
+            audio_stream = io.BytesIO(wav_content)
             
-            try:
-                # Convert WebM to WAV using pydub
-                audio = AudioSegment.from_file(input_path)
-                if len(audio) == 0:
-                    raise HTTPException(status_code=400, detail="Invalid audio file: zero duration")
+            # Load audio using librosa
+            audio_input, sr = librosa.load(audio_stream, sr=16000)
+            
+            if len(audio_input) == 0:
+                raise HTTPException(status_code=400, detail="Empty audio file")
                 
-                audio = audio.set_frame_rate(16000)  # Set sample rate to 16kHz
-                audio.export(output_path, format="wav")
-                
-                # Load audio using librosa
-                audio_input, sr = librosa.load(output_path, sr=16000)
-                if len(audio_input) == 0:
-                    raise HTTPException(status_code=400, detail="Failed to process audio: empty signal")
-                
-            except Exception as e:
-                logger.error(f"Audio processing error: {str(e)}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to process audio file: {str(e)}"
-                )
-                
-        except Exception as e:
-            logger.error(f"File handling error: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error processing upload: {str(e)}"
+            # Get model manager instance
+            model_manager = ModelManager.get_instance()
+            
+            # Transcribe audio
+            transcription = model_manager.transcribe_audio(
+                audio_input,
+                sample_rate=sr
             )
             
-        finally:
-            # Clean up temporary files
-            try:
-                shutil.rmtree(temp_dir)
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary files: {str(e)}")
-        
-        # Get model manager instance
-        model_manager = ModelManager.get_instance()
-        
-        # Transcribe audio with config parameters
-        transcription = model_manager.transcribe_audio(
-            audio_input,
-            sample_rate=sr,
-            beam_size=transcription_config.beam_size,
-            temperature=transcription_config.temperature
-        )
-        
-        # Calculate simple confidence score (placeholder)
-        confidence = 0.95  # In a real implementation, this would come from the model
-        
-        return {
-            "text": transcription,
-            "language": "lg",
-            "confidence": confidence
-        }
-        
+            return {
+                "text": transcription,
+                "language": "lg"
+            }
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to convert audio: {e.stderr.decode()}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Audio processing error: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to process audio: {str(e)}"
+            )
+            
     except Exception as e:
-        logger.error(f"Transcription error: {e}")
+        logger.error(f"Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/synthesize")
-async def synthesize_speech(
-    background_tasks: BackgroundTasks,
-    text: str = None,
-    config: Optional[SynthesisConfig] = None
-):
-    """Convert text to speech with configurable parameters"""
-    if not text:
-        raise HTTPException(status_code=400, detail="No text provided")
-    
+async def synthesize_speech(request: Request):
+    """Convert text to speech"""
     try:
-        # Get model manager instance
-        model_manager = ModelManager.get_instance()
+        # Log raw request body
+        body = await request.body()
+        logger.info(f"Raw request body: {body.decode()}")
         
-        # Generate speech
-        waveforms = model_manager.synthesize_speech(text)
+        # Parse request body
+        data = await request.json()
+        logger.info(f"Parsed request data: {data}")
         
-        # Apply speed and pitch modifications if config provided
-        if config:
-            if config.speed != 1.0:
-                # Simple speed modification using interpolation
-                old_length = waveforms.shape[0]
-                new_length = int(old_length / config.speed)
-                waveforms = torch.nn.functional.interpolate(
-                    waveforms.unsqueeze(0).unsqueeze(0),
-                    size=new_length,
-                    mode='linear',
-                    align_corners=False
-                ).squeeze()
+        text = data.get('text')
+        if not text:
+            logger.error("No text provided in request")
+            raise HTTPException(status_code=400, detail="No text provided")
         
-        # Convert to bytes
-        buffer = io.BytesIO()
-        torchaudio.save(buffer, waveforms.unsqueeze(0), 22050, format='wav')
-        buffer.seek(0)
+        logger.info(f"Synthesizing speech for text: {text}")
         
-        # Clean up background tasks
-        background_tasks.add_task(buffer.close)
-        
-        return StreamingResponse(
-            buffer,
-            media_type="audio/wav",
-            headers={
-                'Content-Disposition': 'attachment; filename="speech.wav"'
-            }
+        try:
+            # Get model manager instance
+            model_manager = ModelManager.get_instance()
+            
+            # Generate speech
+            logger.info("Starting speech synthesis")
+            waveforms = model_manager.synthesize_speech(text)
+            logger.info(f"Generated waveforms shape: {waveforms.shape}")
+            
+            # Convert to bytes
+            buffer = io.BytesIO()
+            logger.info("Converting waveforms to WAV format")
+            
+            # Save as WAV file (waveforms is already 2D after squeeze in model_manager)
+            torchaudio.save(buffer, waveforms, 22050, format='wav')
+            buffer.seek(0)
+            
+            logger.info("Successfully generated speech audio")
+            return StreamingResponse(
+                buffer,
+                media_type="audio/wav",
+                headers={
+                    'Content-Disposition': 'attachment; filename="speech.wav"'
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Speech synthesis error: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error("Error traceback:", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to synthesize speech: {str(e)}"
+            )
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid JSON in request body: {str(e)}"
         )
         
     except Exception as e:
-        logger.error(f"Synthesis error: {e}")
+        logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
