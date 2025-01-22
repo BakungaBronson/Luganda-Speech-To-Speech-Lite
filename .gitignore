@@ -84,3 +84,5 @@ MANIFEST
 
 # Database files
 *.db
+
+model_cache/
