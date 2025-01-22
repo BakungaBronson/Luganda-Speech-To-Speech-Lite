@@ -28,6 +28,9 @@ numpy>=1.24.0
 librosa>=0.10.1
 soundfile>=0.12.1
 
+# OpenAI Integration
+openai==0.28
+
 # Utilities
 python-dotenv>=1.0.0
 loguru>=0.7.2

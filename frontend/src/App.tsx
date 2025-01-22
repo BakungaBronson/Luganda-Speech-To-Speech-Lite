@@ -36,6 +36,11 @@ interface ModelParams {
     speed: number
     pitch: number
   }
+  api: {
+    url: string
+    useOpenAI: boolean
+    openAIKey: string
+  }
 }
 
 function App() {
@@ -55,6 +60,11 @@ function App() {
       speed: 1.0,
       pitch: 1.0,
     },
+    api: {
+      url: 'http://localhost:8000',
+      useOpenAI: false,
+      openAIKey: ''
+    }
   })
 
   type SliderValue = [number]
@@ -69,6 +79,22 @@ function App() {
       [category]: {
         ...prev[category],
         [param]: value[0]
+      }
+    }))
+  }
+
+  const handleAPIChange = (
+    url: string,
+    useOpenAI: boolean,
+    openAIKey?: string
+  ) => {
+    setModelParams(prev => ({
+      ...prev,
+      api: {
+        ...prev.api,
+        url,
+        useOpenAI,
+        ...(openAIKey !== undefined && { openAIKey })
       }
     }))
   }
@@ -154,13 +180,15 @@ function App() {
       formData.append('file', inputBlob)
 
       // Step 1: Transcribe audio
-      const transcribeResponse = await fetch('http://localhost:8000/api/v1/transcribe', {
+      const transcribeResponse = await fetch(`${modelParams.api.url}/api/v1/transcribe`, {
         method: 'POST',
         body: formData,
       })
       
       if (!transcribeResponse.ok) {
-        throw new Error('Failed to transcribe audio')
+        const errorData = await transcribeResponse.json().catch(() => ({}))
+        console.error('Transcription error details:', errorData)
+        throw new Error(errorData.detail || 'Failed to transcribe audio')
       }
       
       const transcribeData = await transcribeResponse.json()
@@ -172,16 +200,40 @@ function App() {
       }
       setMessages(prev => [...prev, userMessage])
 
-      // Step 2: Synthesize speech
-      console.log('Sending text for synthesis:', transcribeData.text)
-      const synthesizeResponse = await fetch('http://localhost:8000/api/v1/synthesize', {
+      // Step 2: Process with OpenAI or local model
+      let responseText = transcribeData.text
+      if (modelParams.api.useOpenAI) {
+        const openaiResponse = await fetch(`${modelParams.api.url}/api/v1/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-OpenAI-Key': modelParams.api.openAIKey
+          },
+          body: JSON.stringify({
+            text: transcribeData.text
+          }),
+        })
+
+        if (!openaiResponse.ok) {
+          const errorData = await openaiResponse.json().catch(() => ({}))
+          console.error('OpenAI error details:', errorData)
+          throw new Error(errorData.detail || 'Failed to process with OpenAI')
+        }
+
+        const openaiData = await openaiResponse.json()
+        responseText = openaiData.text
+      }
+
+      // Step 3: Synthesize speech
+      console.log('Sending text for synthesis:', responseText)
+      const synthesizeResponse = await fetch(`${modelParams.api.url}/api/v1/synthesize`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'audio/wav',
         },
         body: JSON.stringify({
-          text: transcribeData.text
+          text: responseText
         }),
       })
 
@@ -197,7 +249,7 @@ function App() {
       // Add assistant message with audio
       const assistantMessage: Message = {
         role: 'assistant',
-        content: transcribeData.text,
+        content: responseText,
         audioUrl,
       }
       setMessages(prev => [...prev, assistantMessage])
@@ -235,6 +287,49 @@ function App() {
               </SheetDescription>
             </SheetHeader>
             <div className="grid gap-4 py-4">
+              <div className="space-y-2">
+                <h3 className="font-medium">API Settings</h3>
+                <div className="grid gap-2">
+                  <Label htmlFor="api-url">API URL</Label>
+                  <input
+                    type="text"
+                    id="api-url"
+                    name="api-url"
+                    aria-label="API URL"
+                    placeholder="Enter API URL"
+                    value={modelParams.api.url}
+                    onChange={(e) => handleAPIChange(e.target.value, modelParams.api.useOpenAI)}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="use-openai"
+                    name="use-openai"
+                    aria-label="Use OpenAI API"
+                    checked={modelParams.api.useOpenAI}
+                    onChange={(e) => handleAPIChange(modelParams.api.url, e.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="use-openai">Use OpenAI API</Label>
+                </div>
+                {modelParams.api.useOpenAI && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="openai-key">OpenAI API Key</Label>
+                    <input
+                      type="password"
+                      id="openai-key"
+                      name="openai-key"
+                      aria-label="OpenAI API Key"
+                      placeholder="Enter OpenAI API Key"
+                      value={modelParams.api.openAIKey}
+                      onChange={(e) => handleAPIChange(modelParams.api.url, modelParams.api.useOpenAI, e.target.value)}
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                  </div>
+                )}
+              </div>
               <div className="space-y-2">
                 <h3 className="font-medium">Speech-to-Text</h3>
                 <div className="grid gap-2">

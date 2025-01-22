@@ -1,7 +1,8 @@
 import warnings
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Request
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from typing import Optional
 import magic
 import torch
 import librosa
@@ -16,12 +17,16 @@ import io
 import soundfile as sf
 import tempfile
 import json
+import openai
 
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Configure default OpenAI key from environment
+DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 # Ignore warnings from finetuned model
 warnings.filterwarnings('ignore')
@@ -47,6 +52,11 @@ ALLOWED_MIMETYPES = (
     "audio/wav",
     "audio/x-wav"
 )
+
+SYSTEM_PROMPT = """You are a knowledgeable Luganda teacher with knowledge of both English and Luganda. 
+The user will send you text in Luganda and you will respond in Luganda as well. 
+The Luganda given comes from a speech to text output and will not be exact to the word, 
+so use the nearest word to it to generate a response. Your responses must be concise."""
 
 def convert_audio_to_wav(input_bytes):
     """Convert audio bytes to WAV format using ffmpeg"""
@@ -86,7 +96,8 @@ async def root():
         "device": str(model_manager.device),
         "endpoints": {
             "speech_to_text": "/api/v1/transcribe",
-            "text_to_speech": "/api/v1/synthesize"
+            "text_to_speech": "/api/v1/synthesize",
+            "chat": "/api/v1/chat"
         }
     }
 
@@ -144,6 +155,81 @@ async def transcribe_audio(
             
     except Exception as e:
         logger.error(f"Transcription error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/chat")
+async def chat(
+    request: Request,
+    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key")
+):
+    """Process text with OpenAI API"""
+    try:
+        # Parse request body
+        data = await request.json()
+        logger.info(f"Chat request data: {data}")
+        
+        text = data.get('text')
+        if not text:
+            logger.error("No text provided in request")
+            raise HTTPException(status_code=400, detail="No text provided")
+        
+        try:
+            # Use provided API key or fall back to default
+            api_key = x_openai_key or DEFAULT_OPENAI_KEY
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="OpenAI API key not provided and no default key configured"
+                )
+            
+            # Configure OpenAI with the API key
+            openai.api_key = api_key
+            
+            # Call OpenAI API
+            logger.info(f"Sending to OpenAI: {text}")
+            response = openai.ChatCompletion.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ],
+                temperature=1,
+                max_tokens=256,
+                top_p=1,
+                frequency_penalty=0,
+                presence_penalty=0
+            )
+            
+            response_text = response['choices'][0]['message']['content']
+            logger.info(f"OpenAI response: {response_text}")
+            
+            return {
+                "text": response_text
+            }
+            
+        except Exception as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            logger.error("Error details:", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to process with OpenAI: {str(e)}"
+            )
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid JSON in request body: {str(e)}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/synthesize")
