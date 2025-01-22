@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -9,8 +7,10 @@ services:
       - "8000:8000"
     environment:
       - USE_MPS=${USE_MPS:-false}  # Set to true for Apple Silicon GPU support
+      - MODEL_CACHE_DIR=/app/model_cache
     volumes:
       - ./backend:/app
+      - ./backend/model_cache:/app/model_cache
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s

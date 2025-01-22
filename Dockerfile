@@ -17,8 +17,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY backend/ .
+# Copy source code (excluding model_cache)
+COPY backend/*.py .
+COPY backend/audio_files/ audio_files/
+COPY backend/luganda_tts/ luganda_tts/
+COPY backend/vocoder/ vocoder/
 
 # Create final image
 FROM python:3.10-slim

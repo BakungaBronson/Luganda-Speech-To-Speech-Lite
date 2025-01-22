@@ -63,6 +63,11 @@ class ModelManager:
         """Load all required models with proper error handling and device management"""
         os.makedirs("model_cache", exist_ok=True)
         
+        # Configure environment variables for model caching
+        os.environ["HF_HOME"] = os.getenv("MODEL_CACHE_DIR", "/app/model_cache")
+        os.environ["HUGGINGFACE_HUB_CACHE"] = os.getenv("MODEL_CACHE_DIR", "/app/model_cache")
+        os.environ["SPEECHBRAIN_CACHE"] = os.getenv("MODEL_CACHE_DIR", "/app/model_cache")
+
         try:
             logger.info("Loading Whisper processor...")
             self._processor = WhisperProcessor.from_pretrained(
