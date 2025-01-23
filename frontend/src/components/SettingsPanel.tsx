@@ -96,7 +96,7 @@ export function SettingsPanel({ modelParams, onSettingsChange }: SettingsPanelPr
                   modelName: value === 'deepseek' 
                     ? 'deepseek-chat' 
                     : value === 'openai'
-                    ? 'gpt-4'
+                    ? 'gpt-4o'
                     : ''
                 })}
               >

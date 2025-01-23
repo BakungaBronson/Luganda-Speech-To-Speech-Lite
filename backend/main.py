@@ -387,7 +387,7 @@ async def handle_chat_request(messages: List[Dict], config: ProviderConfig, para
         if not config.api_key.startswith("sk-"):
             raise HTTPException(400, "OpenAI API keys must start with 'sk-'")
         if not config.model_name:
-            config.model_name = "gpt-4"
+            config.model_name = "gpt-4o"
         # Set default OpenAI base URL if none provided
         if not config.base_url:
             config.base_url = "https://api.openai.com/v1"
