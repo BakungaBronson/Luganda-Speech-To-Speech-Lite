@@ -35,7 +35,11 @@ export interface ModelParams {
   api: {
     url: string
     providerType: ProviderType
-    apiKey: string
+    apiKeys: {
+      openai?: string
+      deepseek?: string
+      custom?: string
+    }
     baseUrl?: string
     modelName?: string
     systemPrompt?: string

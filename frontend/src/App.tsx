@@ -42,7 +42,11 @@ function App() {
     api: {
       url: 'http://localhost:8000',
       providerType: 'openai',
-      apiKey: '',
+      apiKeys: {
+        openai: '',
+        deepseek: '', 
+        custom: ''
+      } as Record<ProviderType, string>,
       baseUrl: '',
       modelName: ''
     }
@@ -106,7 +110,11 @@ function App() {
           api: {
             ...prev.api,
             url: settings.apiUrl || prev.api.url,
-            apiKey: settings.apiKey || '',
+            apiKeys: {
+              openai: settings.apiKeys?.openai || '',
+              deepseek: settings.apiKeys?.deepseek || '',
+              custom: settings.apiKeys?.custom || ''
+            },
             providerType: (settings.providerType as ProviderType) || 'openai',
             baseUrl: settings.baseUrl || '',
             modelName: settings.modelName || '',
@@ -144,7 +152,7 @@ function App() {
   useEffect(() => {
     saveSettings({
       apiUrl: modelParams.api.url,
-      apiKey: modelParams.api.apiKey,
+      apiKeys: modelParams.api.apiKeys,
       providerType: modelParams.api.providerType,
       baseUrl: modelParams.api.baseUrl,
       modelName: modelParams.api.modelName,
@@ -256,10 +264,11 @@ function App() {
   }
 
   const startRecording = async () => {
-    if (!modelParams.api.apiKey) {
-      showError('Please enter your API key in settings')
-      return
-    }
+      const apiKey = modelParams.api.apiKeys[modelParams.api.providerType];
+      if (!apiKey) {
+        showError(`Please enter your ${modelParams.api.providerType} API key in settings`);
+        return;
+      }
 
     if (isRecording || mediaRecorderRef.current?.state === 'recording') {
       console.warn('Already recording')
@@ -356,10 +365,15 @@ function App() {
       setMessages(prev => [...prev, userMessage])
 
       // Step 2: Process with chat API
+      const apiKey = modelParams.api.apiKeys[modelParams.api.providerType];
+      if (!apiKey) {
+        throw new Error(`No API key found for provider: ${modelParams.api.providerType}`);
+      }
+
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'X-Provider-Type': modelParams.api.providerType,
-        'X-API-Key': modelParams.api.apiKey,
+        'X-API-Key': apiKey,
         'X-System-Prompt': modelParams.api.systemPrompt || ''
       }
 

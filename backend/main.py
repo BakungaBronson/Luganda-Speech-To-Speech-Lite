@@ -372,29 +372,57 @@ async def transcribe_audio(
 
 async def handle_chat_request(messages: List[Dict], config: ProviderConfig, params: Dict):
     """Handle request using OpenAI-compatible API"""
+    # Reset OpenAI configuration completely
+    openai.api_key = None
+    openai.api_base = None
+    
+    # Provider-specific validation and configuration
+    if config.type == ProviderType.DEEPSEEK:
+        if not config.model_name:
+            config.model_name = "deepseek-chat"
+        if not config.base_url:
+            config.base_url = "https://api.deepseek.com/v1"
+            
+    elif config.type == ProviderType.OPENAI:
+        if not config.api_key.startswith("sk-"):
+            raise HTTPException(400, "OpenAI API keys must start with 'sk-'")
+        if not config.model_name:
+            config.model_name = "gpt-4"
+        # Set default OpenAI base URL if none provided
+        if not config.base_url:
+            config.base_url = "https://api.openai.com/v1"
+            
+    elif config.type == ProviderType.CUSTOM:
+        if not config.base_url:
+            raise HTTPException(400, "Custom provider requires a base URL")
+        if not config.model_name:
+            raise HTTPException(400, "Custom provider requires a model name")
+    
+    # Common validation
+    if not config.api_key:
+        raise HTTPException(400, "API key is required")
+        
+    # Apply configuration
     openai.api_key = config.api_key
     if config.base_url:
         openai.api_base = config.base_url
-        
-    # For custom providers, model name is required
-    if config.type == ProviderType.CUSTOM and not config.model_name:
-        raise HTTPException(400, "Custom provider requires model name")
-        
-    # Use provided model name or default based on provider
-    model_name = config.model_name
-    if not model_name:
-        model_name = "deepseek-chat" if config.type == ProviderType.DEEPSEEK else "gpt-4"
-        
-    response = openai.ChatCompletion.create(
-        model=model_name,
-        messages=messages,
-        temperature=params.get('temperature', 0.8),
-        max_tokens=params.get('max_tokens', 256),
-        top_p=params.get('top_p', 1),
-        frequency_penalty=params.get('frequency_penalty', 0),
-        presence_penalty=params.get('presence_penalty', 0)
-    )
-    return response
+    
+    try:
+        response = openai.ChatCompletion.create(
+            model=config.model_name,
+            messages=messages,
+            temperature=params.get('temperature', 0.8),
+            max_tokens=params.get('max_tokens', 256),
+            top_p=params.get('top_p', 1),
+            frequency_penalty=params.get('frequency_penalty', 0),
+            presence_penalty=params.get('presence_penalty', 0)
+        )
+        return response
+    except openai.error.InvalidRequestError as e:
+        error_msg = f"{config.type.value} API error: {str(e)}"
+        if "model_not_found" in str(e):
+            error_msg += f"\nFor {config.type.value}, use model: {config.model_name}"
+        raise HTTPException(500, error_msg)
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(
