@@ -4,6 +4,7 @@ import { Mic, Square, Loader2 } from 'lucide-react'
 interface RecordingControlsProps {
   isRecording: boolean
   isProcessing: boolean
+  isInitializing?: boolean
   onStartRecording: () => void
   onStopRecording: () => void
 }
@@ -11,13 +12,14 @@ interface RecordingControlsProps {
 export function RecordingControls({
   isRecording,
   isProcessing,
+  isInitializing = false,
   onStartRecording,
   onStopRecording
 }: RecordingControlsProps) {
   return (
     <div className="sticky bottom-0 border-t bg-background p-4">
       <div className="flex justify-center">
-        {isProcessing ? (
+        {isProcessing || isInitializing ? (
           <Button disabled className="w-12 h-12 rounded-full">
             <Loader2 className="w-6 h-6 animate-spin" />
           </Button>

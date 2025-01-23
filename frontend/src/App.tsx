@@ -48,9 +48,58 @@ function App() {
     }
   })
 
+  const [isInitializing, setIsInitializing] = useState(true)
+
+  const setupInitialConversation = async () => {
+    try {
+      // First try to create a new conversation
+      const response = await fetch(`${modelParams.api.url}/api/v1/conversations`, {
+        method: 'POST'
+      })
+      if (!response.ok) {
+        throw new Error('Failed to create conversation')
+      }
+      const data = await response.json()
+      setCurrentConversationId(data.conversation_id)
+      
+      // Save as last active conversation
+      const settings = await loadSettings()
+      await saveSettings({
+        ...settings,
+        lastActiveConversationId: data.conversation_id
+      })
+      
+      // Load conversations list
+      await loadConversations()
+    } catch (initialError) {
+      console.error('Error creating conversation:', initialError)
+      try {
+        // If creating new fails, try to load existing conversations
+        const response = await fetch(`${modelParams.api.url}/api/v1/conversations`)
+        if (!response.ok) {
+          throw new Error('Failed to load conversations')
+        }
+        const data = await response.json()
+        if (data && data.length > 0) {
+          // Load the most recent conversation
+          const lastConversation = data[0]
+          await loadConversation(lastConversation.id)
+        } else {
+          // No conversations exist and can't create new one
+          showError('Unable to start new conversation. Please check your connection.')
+        }
+      } catch (fallbackError) {
+        console.error('Error loading existing conversations:', fallbackError)
+        showError('Unable to load conversations. Please check your connection.')
+      }
+    } finally {
+      setIsInitializing(false)
+    }
+  }
+
   useEffect(() => {
-    const loadStoredSettings = async () => {
-      const settings = await loadSettings();
+    const initialize = async () => {
+      const settings = await loadSettings()
       if (settings) {
         setModelParams(prev => ({
           ...prev,
@@ -71,12 +120,25 @@ function App() {
             ...prev.tts,
             ...(settings.tts || {})
           }
-        }));
+        }))
+
+        // Try to load last active conversation if it exists
+        if (settings.lastActiveConversationId) {
+          try {
+            await loadConversation(settings.lastActiveConversationId)
+            setIsInitializing(false)
+            return
+          } catch (loadError) {
+            console.error('Failed to load last active conversation:', loadError)
+          }
+        }
       }
-    };
+      
+      // If no last active conversation or failed to load it, set up a new one
+      await setupInitialConversation()
+    }
     
-    loadStoredSettings();
-    loadConversations();
+    initialize()
   }, [])
 
   useEffect(() => {
@@ -204,7 +266,7 @@ function App() {
       return
     }
 
-    if (!currentConversationId) {
+    if (!currentConversationId && !isInitializing) {
       await startNewConversation()
     }
 
@@ -409,12 +471,13 @@ function App() {
           onError={showError}
         />
 
-        <RecordingControls
-          isRecording={isRecording}
-          isProcessing={isProcessing}
-          onStartRecording={startRecording}
-          onStopRecording={stopRecording}
-        />
+          <RecordingControls
+            isRecording={isRecording}
+            isProcessing={isProcessing}
+            isInitializing={isInitializing}
+            onStartRecording={startRecording}
+            onStopRecording={stopRecording}
+          />
       </div>
     </>
   )

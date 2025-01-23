@@ -23,7 +23,18 @@ export function ChatMessages({ messages, scrollRef, onError }: ChatMessagesProps
   return (
     <ScrollArea className="flex-1 p-4">
       <div className="space-y-4 max-w-2xl mx-auto">
-        {messages.map((message, index) => (
+        {messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4">
+            <h2 className="text-2xl font-semibold">Welcome to Luganda Speech-to-Speech</h2>
+            <p className="text-muted-foreground max-w-md">
+              Click the microphone button below to start speaking in Luganda. 
+              Your speech will be transcribed and you'll receive a response in Luganda with audio playback.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Make sure your microphone is connected and permissions are granted.
+            </p>
+          </div>
+        ) : messages.map((message, index) => (
           <div
             key={index}
             className={`flex ${
