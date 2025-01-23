@@ -10,6 +10,20 @@ A lightweight Luganda speech-to-speech system with support for Apple Silicon GPU
 - Modern React frontend with Shadcn UI
 - Docker support with multi-architecture builds
 
+## Models
+
+This project uses the following open-source models:
+
+### Speech-to-Text
+- Model: [allandclive/whisper-tiny-luganda-v2](https://huggingface.co/allandclive/whisper-tiny-luganda-v2)
+- Type: Fine-tuned Whisper model optimized for Luganda speech recognition
+
+### Text-to-Speech
+- Text to Mel-Spectrogram: [Sunbird/sunbird-lug-tts](https://huggingface.co/Sunbird/sunbird-lug-tts)
+  - Type: Tacotron2 model trained for Luganda speech synthesis
+- Vocoder: [speechbrain/tts-hifigan-ljspeech](https://huggingface.co/speechbrain/tts-hifigan-ljspeech)
+  - Type: HiFiGAN vocoder for high-quality waveform generation
+
 ## Prerequisites
 
 - Python 3.9+ (3.10+ recommended for Apple Silicon)
