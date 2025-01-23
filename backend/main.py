@@ -370,77 +370,31 @@ async def transcribe_audio(
         logger.error(f"Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def handle_openai_request(messages: List[Dict], config: ProviderConfig, params: Dict):
-    """Handle request using OpenAI API"""
+async def handle_chat_request(messages: List[Dict], config: ProviderConfig, params: Dict):
+    """Handle request using OpenAI-compatible API"""
     openai.api_key = config.api_key
+    if config.base_url:
+        openai.api_base = config.base_url
+        
+    # For custom providers, model name is required
+    if config.type == ProviderType.CUSTOM and not config.model_name:
+        raise HTTPException(400, "Custom provider requires model name")
+        
+    # Use provided model name or default based on provider
+    model_name = config.model_name
+    if not model_name:
+        model_name = "deepseek-chat" if config.type == ProviderType.DEEPSEEK else "gpt-4"
+        
     response = openai.ChatCompletion.create(
-        model=params.get('model', 'gpt-4o'),
+        model=model_name,
         messages=messages,
-        temperature=params.get('temperature', 1),
+        temperature=params.get('temperature', 0.8),
         max_tokens=params.get('max_tokens', 256),
         top_p=params.get('top_p', 1),
         frequency_penalty=params.get('frequency_penalty', 0),
         presence_penalty=params.get('presence_penalty', 0)
     )
     return response
-
-async def handle_deepseek_request(messages: List[Dict], config: ProviderConfig, params: Dict):
-    """Handle request using DeepSeek API"""
-    import httpx
-    base_url = config.base_url or "https://api.deepseek.com"
-    headers = {
-        "Authorization": f"Bearer {config.api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": config.model_name or "deepseek-chat",
-        "messages": messages,
-        "temperature": params.get('temperature', 0.7),
-        "max_tokens": params.get('max_tokens', 256),
-        "top_p": params.get('top_p', 1),
-        "stream": False
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=30.0
-        )
-        response.raise_for_status()
-        return response.json()
-
-async def handle_custom_request(messages: List[Dict], config: ProviderConfig, params: Dict):
-    """Handle request using custom provider API"""
-    import httpx
-    if not config.base_url:
-        raise HTTPException(400, "Custom provider requires base URL")
-    if not config.model_name:
-        raise HTTPException(400, "Custom provider requires model name")
-
-    headers = {
-        "Authorization": f"Bearer {config.api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": config.model_name,
-        "messages": messages,
-        "temperature": params.get('temperature', 0.7),
-        "max_tokens": params.get('max_tokens', 256),
-        "top_p": params.get('top_p', 1),
-        "stream": False
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{config.base_url}/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=30.0
-        )
-        response.raise_for_status()
-        return response.json()
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(
@@ -471,15 +425,8 @@ async def create_chat_completion(
             "content": x_system_prompt or SYSTEM_PROMPT
         }] + [{"role": m.role, "content": m.content} for m in request.messages]
         
-        # Route to appropriate handler
-        if config.type == ProviderType.OPENAI:
-            response = await handle_openai_request(messages, config, request.dict())
-        elif config.type == ProviderType.DEEPSEEK:
-            response = await handle_deepseek_request(messages, config, request.dict())
-        elif config.type == ProviderType.CUSTOM:
-            response = await handle_custom_request(messages, config, request.dict())
-        else:
-            raise HTTPException(400, f"Unsupported provider type: {config.type}")
+        # Handle request using OpenAI-compatible API
+        response = await handle_chat_request(messages, config, request.dict())
             
         # Convert to standard response format
         chat_response = ChatCompletionResponse(
@@ -563,15 +510,8 @@ async def chat(
             
             logger.info(f"Sending to {config.type}: {text}")
             
-            # Route to appropriate handler
-            if config.type == ProviderType.OPENAI:
-                response = await handle_openai_request(messages, config, {})
-            elif config.type == ProviderType.DEEPSEEK:
-                response = await handle_deepseek_request(messages, config, {})
-            elif config.type == ProviderType.CUSTOM:
-                response = await handle_custom_request(messages, config, {})
-            else:
-                raise HTTPException(400, f"Unsupported provider type: {config.type}")
+            # Handle request using OpenAI-compatible API
+            response = await handle_chat_request(messages, config, {})
             
             response_text = response['choices'][0]['message']['content']
             logger.info(f"OpenAI response: {response_text}")
