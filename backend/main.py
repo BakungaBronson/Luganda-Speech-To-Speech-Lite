@@ -374,7 +374,7 @@ async def handle_openai_request(messages: List[Dict], config: ProviderConfig, pa
     """Handle request using OpenAI API"""
     openai.api_key = config.api_key
     response = openai.ChatCompletion.create(
-        model=params.get('model', 'gpt-4'),
+        model=params.get('model', 'gpt-4o'),
         messages=messages,
         temperature=params.get('temperature', 1),
         max_tokens=params.get('max_tokens', 256),
