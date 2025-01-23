@@ -166,7 +166,7 @@ ALLOWED_MIMETYPES = (
     "audio/x-wav"
 )
 
-SYSTEM_PROMPT = """You are an expert Luganda language instructor with native-level fluency in both English and Luganda. You understand the nuances, idioms, and cultural context of Luganda communication. When users send Luganda text that may contain speech-to-text transcription errors or variations, you will intelligently interpret their meaning using context clues and respond naturally in proper Luganda. Your responses should maintain authentic Luganda grammar, tone, and cultural appropriateness while accommodating common speech pattern variations. If the input contains unclear words, you will match them to the most likely intended Luganda words based on pronunciation patterns and context. Engage in natural Luganda conversation while subtly modeling correct usage. Your outputs must be concise and not contain any jargon."""
+SYSTEM_PROMPT = """You are an expert Luganda language assistant with native-level fluency in both English and Luganda. You understand the nuances, idioms, and cultural context of Luganda communication. When users send Luganda text that may contain speech-to-text transcription errors or variations, you will intelligently interpret their meaning using context clues and respond naturally in proper Luganda. Your responses should maintain authentic Luganda grammar, tone, and cultural appropriateness while accommodating common speech pattern variations. If the input contains unclear words, you will match them to the most likely intended Luganda words based on pronunciation patterns and context. Engage in natural Luganda conversation while subtly modeling correct usage. Your outputs must be concise and not contain any jargon."""
 
 def save_audio_file(audio_data: bytes, conversation_id: Union[int, str]) -> str:
     """Save audio file and return its path"""
@@ -448,7 +448,8 @@ async def create_chat_completion(
     x_provider_type: ProviderType = Header(ProviderType.OPENAI, alias="X-Provider-Type"),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     x_base_url: Optional[str] = Header(None, alias="X-Base-URL"),
-    x_model_name: Optional[str] = Header(None, alias="X-Model-Name")
+    x_model_name: Optional[str] = Header(None, alias="X-Model-Name"),
+    x_system_prompt: Optional[str] = Header(None, alias="X-System-Prompt")
 ):
     """Provider-agnostic chat completion endpoint"""
     try:
@@ -467,7 +468,7 @@ async def create_chat_completion(
         # Set up messages with system prompt
         messages = [{
             "role": "system",
-            "content": SYSTEM_PROMPT
+            "content": x_system_prompt or SYSTEM_PROMPT
         }] + [{"role": m.role, "content": m.content} for m in request.messages]
         
         # Route to appropriate handler
@@ -519,6 +520,7 @@ async def chat(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     x_base_url: Optional[str] = Header(None, alias="X-Base-URL"),
     x_model_name: Optional[str] = Header(None, alias="X-Model-Name"),
+    x_system_prompt: Optional[str] = Header(None, alias="X-System-Prompt"),
     session: AsyncSession = Depends(get_session)
 ):
     """Process text with OpenAI API"""
@@ -551,7 +553,7 @@ async def chat(
             messages = [
                 {
                     "role": "system",
-                    "content": SYSTEM_PROMPT
+                    "content": x_system_prompt or SYSTEM_PROMPT
                 },
                 {
                     "role": "user", 

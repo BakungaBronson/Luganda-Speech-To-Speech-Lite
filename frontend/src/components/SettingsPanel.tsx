@@ -152,6 +152,30 @@ export function SettingsPanel({ modelParams, onSettingsChange }: SettingsPanelPr
                 </div>
               </>
             )}
+            
+            <div className="grid gap-2">
+              <Label htmlFor="system-prompt">System Prompt</Label>
+              <textarea
+                id="system-prompt"
+                name="system-prompt"
+                aria-label="System Prompt"
+                placeholder="Enter system prompt"
+                value={modelParams.api.systemPrompt || "You are an expert Luganda language instructor with native-level fluency in both English and Luganda. You understand the nuances, idioms, and cultural context of Luganda communication. When users send Luganda text that may contain speech-to-text transcription errors or variations, you will intelligently interpret their meaning using context clues and respond naturally in proper Luganda. Your responses should maintain authentic Luganda grammar, tone, and cultural appropriateness while accommodating common speech pattern variations. If the input contains unclear words, you will match them to the most likely intended Luganda words based on pronunciation patterns and context. Engage in natural Luganda conversation while subtly modeling correct usage. Your outputs must be concise and not contain any jargon."}
+                onChange={(e) => handleAPIChange({
+                  systemPrompt: e.target.value
+                })}
+                className="flex min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => handleAPIChange({
+                  systemPrompt: "You are an expert Luganda language instructor with native-level fluency in both English and Luganda. You understand the nuances, idioms, and cultural context of Luganda communication. When users send Luganda text that may contain speech-to-text transcription errors or variations, you will intelligently interpret their meaning using context clues and respond naturally in proper Luganda. Your responses should maintain authentic Luganda grammar, tone, and cultural appropriateness while accommodating common speech pattern variations. If the input contains unclear words, you will match them to the most likely intended Luganda words based on pronunciation patterns and context. Engage in natural Luganda conversation while subtly modeling correct usage. Your outputs must be concise and not contain any jargon."
+                })}
+              >
+                Reset to Default
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-2">

@@ -38,6 +38,7 @@ export interface ModelParams {
     apiKey: string
     baseUrl?: string
     modelName?: string
+    systemPrompt?: string
   }
 }
 

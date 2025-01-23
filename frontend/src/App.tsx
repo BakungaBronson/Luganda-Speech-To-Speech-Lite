@@ -60,7 +60,8 @@ function App() {
             apiKey: settings.apiKey || '',
             providerType: (settings.providerType as ProviderType) || 'openai',
             baseUrl: settings.baseUrl || '',
-            modelName: settings.modelName || ''
+            modelName: settings.modelName || '',
+            systemPrompt: settings.systemPrompt || ''
           },
           stt: {
             ...prev.stt,
@@ -85,6 +86,7 @@ function App() {
       providerType: modelParams.api.providerType,
       baseUrl: modelParams.api.baseUrl,
       modelName: modelParams.api.modelName,
+      systemPrompt: modelParams.api.systemPrompt,
       stt: modelParams.stt,
       tts: modelParams.tts
     });
@@ -296,6 +298,7 @@ function App() {
         'Content-Type': 'application/json',
         'X-Provider-Type': modelParams.api.providerType,
         'X-API-Key': modelParams.api.apiKey,
+        'X-System-Prompt': modelParams.api.systemPrompt || ''
       }
 
       if (modelParams.api.providerType === 'custom') {
