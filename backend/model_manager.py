@@ -158,27 +158,40 @@ class ModelManager:
     
     def transcribe_audio(self, audio_input, sample_rate=16000):
         """Transcribe audio using Whisper model"""
-        # Process audio input
-        input_features = self.processor(
-            audio_input,
-            sampling_rate=sample_rate,
-            return_tensors="pt"
-        ).input_features.to(self.device)
-        
-        # Generate token ids without specifying language
-        generated_ids = self.model.generate(
-            input_features,
-            attention_mask=torch.ones_like(input_features),
-            forced_decoder_ids=None
-        )
-        
-        # Decode token ids to text
-        transcription = self.processor.batch_decode(
-            generated_ids,
-            skip_special_tokens=True
-        )[0]
-        
-        return transcription
+        try:
+            # Process audio input
+            input_features = self.processor(
+                audio_input,
+                sampling_rate=sample_rate,
+                return_tensors="pt"
+            ).input_features
+
+            # Match precision with model and move to device
+            if self.device.type in ["cuda", "mps"]:
+                input_features = input_features.half()
+            input_features = input_features.to(self.device)
+
+            # Create attention mask with matching precision
+            attention_mask = torch.ones_like(input_features)
+            
+            # Generate token ids without specifying language
+            generated_ids = self.model.generate(
+                input_features,
+                attention_mask=attention_mask,
+                forced_decoder_ids=None
+            )
+            
+            # Decode token ids to text
+            transcription = self.processor.batch_decode(
+                generated_ids,
+                skip_special_tokens=True
+            )[0]
+            
+            return transcription
+            
+        except Exception as e:
+            logger.error(f"Error in transcribe_audio: {str(e)}")
+            raise RuntimeError(f"Failed to transcribe audio: {str(e)}")
     
     def synthesize_speech(self, text, speed=1.0, pitch=1.0):
         """Convert text to speech using Tacotron2 and HiFiGAN with speed and pitch control"""
@@ -203,4 +216,5 @@ class ModelManager:
             effect = T.PitchShift(sample_rate=22050, n_steps=n_steps)
             waveforms = effect(waveforms)
         
-        return waveforms
+        # Move waveforms to CPU before returning to ensure compatibility with audio saving
+        return waveforms.cpu()

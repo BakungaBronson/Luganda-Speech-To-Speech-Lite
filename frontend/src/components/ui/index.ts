@@ -14,3 +14,13 @@ export {
 } from "./toast"
 export { useToast } from "./use-toast"
 export { Toaster } from "./toaster"
+export {
+  Select,
+  SelectGroup,
+  SelectValue,
+  SelectTrigger,
+  SelectContent,
+  SelectLabel,
+  SelectItem,
+  SelectSeparator,
+} from "./select"

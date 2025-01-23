@@ -23,7 +23,7 @@ A lightweight Luganda speech-to-speech system with support for Apple Silicon GPU
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/BakungaBronson/Luganda-Speech-To-Speech-Lite.git
+   git clone <repository-url>
    cd luganda-speech-to-speech-lite
    ```
 
@@ -41,19 +41,34 @@ The application will be available at:
 - Backend API: http://localhost:8000
 - API Documentation: http://localhost:8000/docs
 
-### Manual Installation
+### Manual Installation with Python Virtual Environment
 
-1. Set up the backend:
+1. Create and activate a Python virtual environment:
+   ```bash
+   # Create a new virtual environment
+   python -m venv venv
+
+   # Activate the virtual environment
+   # On Windows:
+   .\venv\Scripts\activate
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
+
+2. Set up the backend:
    ```bash
    # Install Python dependencies
    pip install -r requirements.txt
+
+   # Optional: Enable GPU acceleration on Apple Silicon
+   export USE_MPS=true
 
    # Start the FastAPI server
    cd backend
    uvicorn main:app --host 0.0.0.0 --port 8000
    ```
 
-2. Set up the frontend:
+3. Set up the frontend:
    ```bash
    # Install Node.js dependencies
    cd frontend
@@ -62,6 +77,25 @@ The application will be available at:
    # Start the development server
    npm run dev
    ```
+
+4. Deactivate the virtual environment when done:
+   ```bash
+   deactivate
+   ```
+
+Note: When running without Docker, make sure to manage your Python virtual environment properly:
+- Always activate the virtual environment before running the backend server
+- Use `pip list` to verify installed packages
+- If you install new packages, update requirements.txt:
+  ```bash
+  pip freeze > requirements.txt
+  ```
+- To recreate the environment on another machine:
+  ```bash
+  python -m venv venv
+  source venv/bin/activate  # or .\venv\Scripts\activate on Windows
+  pip install -r requirements.txt
+  ```
 
 ## API Endpoints
 

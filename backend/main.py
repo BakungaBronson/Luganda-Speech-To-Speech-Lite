@@ -33,7 +33,20 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# OpenAI-compatible API models
+# Provider enums and config models
+from enum import Enum
+class ProviderType(str, Enum):
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    CUSTOM = "custom"
+
+class ProviderConfig(BaseModel):
+    type: ProviderType
+    base_url: Optional[str] = Field(None, description="Base URL for API requests")
+    api_key: str = Field(..., description="API key for authentication")
+    model_name: Optional[str] = Field(None, description="Model name for custom providers")
+
+# Provider-agnostic API models
 class ChatMessage(BaseModel):
     role: str = Field(..., description="The role of the message sender (system/user/assistant)")
     content: str = Field(..., description="The content of the message")
@@ -153,10 +166,7 @@ ALLOWED_MIMETYPES = (
     "audio/x-wav"
 )
 
-SYSTEM_PROMPT = """You are a knowledgeable Luganda teacher with knowledge of both English and Luganda. 
-The user will send you text in Luganda and you will respond in Luganda as well. 
-The Luganda given comes from a speech to text output and will not be exact to the word, 
-so use the nearest word to it to generate a response."""
+SYSTEM_PROMPT = """You are an expert Luganda language instructor with native-level fluency in both English and Luganda. You understand the nuances, idioms, and cultural context of Luganda communication. When users send Luganda text that may contain speech-to-text transcription errors or variations, you will intelligently interpret their meaning using context clues and respond naturally in proper Luganda. Your responses should maintain authentic Luganda grammar, tone, and cultural appropriateness while accommodating common speech pattern variations. If the input contains unclear words, you will match them to the most likely intended Luganda words based on pronunciation patterns and context. Engage in natural Luganda conversation while subtly modeling correct usage. Your outputs must be concise and not contain any jargon."""
 
 def save_audio_file(audio_data: bytes, conversation_id: Union[int, str]) -> str:
     """Save audio file and return its path"""
@@ -360,50 +370,117 @@ async def transcribe_audio(
         logger.error(f"Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def handle_openai_request(messages: List[Dict], config: ProviderConfig, params: Dict):
+    """Handle request using OpenAI API"""
+    openai.api_key = config.api_key
+    response = openai.ChatCompletion.create(
+        model=params.get('model', 'gpt-4'),
+        messages=messages,
+        temperature=params.get('temperature', 1),
+        max_tokens=params.get('max_tokens', 256),
+        top_p=params.get('top_p', 1),
+        frequency_penalty=params.get('frequency_penalty', 0),
+        presence_penalty=params.get('presence_penalty', 0)
+    )
+    return response
+
+async def handle_deepseek_request(messages: List[Dict], config: ProviderConfig, params: Dict):
+    """Handle request using DeepSeek API"""
+    import httpx
+    base_url = config.base_url or "https://api.deepseek.com"
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": config.model_name or "deepseek-chat",
+        "messages": messages,
+        "temperature": params.get('temperature', 0.7),
+        "max_tokens": params.get('max_tokens', 256),
+        "top_p": params.get('top_p', 1),
+        "stream": False
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()
+
+async def handle_custom_request(messages: List[Dict], config: ProviderConfig, params: Dict):
+    """Handle request using custom provider API"""
+    import httpx
+    if not config.base_url:
+        raise HTTPException(400, "Custom provider requires base URL")
+    if not config.model_name:
+        raise HTTPException(400, "Custom provider requires model name")
+
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": config.model_name,
+        "messages": messages,
+        "temperature": params.get('temperature', 0.7),
+        "max_tokens": params.get('max_tokens', 256),
+        "top_p": params.get('top_p', 1),
+        "stream": False
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{config.base_url}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()
+
 @app.post("/v1/chat/completions")
 async def create_chat_completion(
     request: ChatCompletionRequest,
-    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key")
+    x_provider_type: ProviderType = Header(ProviderType.OPENAI, alias="X-Provider-Type"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_base_url: Optional[str] = Header(None, alias="X-Base-URL"),
+    x_model_name: Optional[str] = Header(None, alias="X-Model-Name")
 ):
-    """OpenAI-compatible chat completion endpoint"""
+    """Provider-agnostic chat completion endpoint"""
     try:
-        # Use provided API key or fall back to default
-        api_key = x_openai_key or DEFAULT_OPENAI_KEY
+        # Configure provider
+        api_key = x_api_key or DEFAULT_OPENAI_KEY
         if not api_key:
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication failed. Please provide a valid API key."
-            )
-        
-        # Configure OpenAI with the API key
-        openai.api_key = api_key
-        
-        # Get the last user message
-        user_message = next(
-            (msg for msg in reversed(request.messages) if msg.role == "user"),
-            None
-        )
-        if not user_message:
-            raise HTTPException(
-                status_code=400,
-                detail="No user message found in the conversation"
-            )
-        
-        # Call OpenAI API with the provided parameters
-        response = openai.ChatCompletion.create(
-            model=request.model,
-            messages=[{
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            }] + [{"role": m.role, "content": m.content} for m in request.messages],
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            top_p=request.top_p,
-            frequency_penalty=request.frequency_penalty,
-            presence_penalty=request.presence_penalty
+            raise HTTPException(401, "API key required")
+            
+        config = ProviderConfig(
+            type=x_provider_type,
+            api_key=api_key,
+            base_url=x_base_url,
+            model_name=x_model_name
         )
         
-        # Convert OpenAI response to our format
+        # Set up messages with system prompt
+        messages = [{
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }] + [{"role": m.role, "content": m.content} for m in request.messages]
+        
+        # Route to appropriate handler
+        if config.type == ProviderType.OPENAI:
+            response = await handle_openai_request(messages, config, request.dict())
+        elif config.type == ProviderType.DEEPSEEK:
+            response = await handle_deepseek_request(messages, config, request.dict())
+        elif config.type == ProviderType.CUSTOM:
+            response = await handle_custom_request(messages, config, request.dict())
+        else:
+            raise HTTPException(400, f"Unsupported provider type: {config.type}")
+            
+        # Convert to standard response format
         chat_response = ChatCompletionResponse(
             id=f"chatcmpl-{int(time.time())}",
             created=int(time.time()),
@@ -420,9 +497,9 @@ async def create_chat_completion(
                 for idx, choice in enumerate(response["choices"])
             ],
             usage=Usage(
-                prompt_tokens=response["usage"]["prompt_tokens"],
-                completion_tokens=response["usage"]["completion_tokens"],
-                total_tokens=response["usage"]["total_tokens"]
+                prompt_tokens=response["usage"].get("prompt_tokens", 0),
+                completion_tokens=response["usage"].get("completion_tokens", 0),
+                total_tokens=response["usage"].get("total_tokens", 0)
             )
         )
         
@@ -435,10 +512,13 @@ async def create_chat_completion(
             raise HTTPException(status_code=status_code, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/chat")
+@app.post("/api/v1/chat") 
 async def chat(
     request: Request,
-    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key"),
+    x_provider_type: ProviderType = Header(ProviderType.OPENAI, alias="X-Provider-Type"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_base_url: Optional[str] = Header(None, alias="X-Base-URL"),
+    x_model_name: Optional[str] = Header(None, alias="X-Model-Name"),
     session: AsyncSession = Depends(get_session)
 ):
     """Process text with OpenAI API"""
@@ -455,37 +535,41 @@ async def chat(
             raise HTTPException(status_code=400, detail="No text provided")
         
         try:
-            # Use provided API key or fall back to default
-            api_key = x_openai_key or DEFAULT_OPENAI_KEY
+            # Configure provider
+            api_key = x_api_key or DEFAULT_OPENAI_KEY
             if not api_key:
-                raise HTTPException(
-                    status_code=400,
-                    detail="OpenAI API key not provided and no default key configured"
-                )
-            
-            # Configure OpenAI with the API key
-            openai.api_key = api_key
-            
-            # Call OpenAI API
-            logger.info(f"Sending to OpenAI: {text}")
-            response = openai.ChatCompletion.create(
-                model="gpt-4o",  # Using standard GPT-4 model name
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": text
-                    }
-                ],
-                temperature=1,
-                max_tokens=256,
-                top_p=1,
-                frequency_penalty=0,
-                presence_penalty=0
+                raise HTTPException(400, "API key required")
+                
+            config = ProviderConfig(
+                type=x_provider_type,
+                api_key=api_key,
+                base_url=x_base_url,
+                model_name=x_model_name
             )
+            
+            # Set up messages
+            messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user", 
+                    "content": text
+                }
+            ]
+            
+            logger.info(f"Sending to {config.type}: {text}")
+            
+            # Route to appropriate handler
+            if config.type == ProviderType.OPENAI:
+                response = await handle_openai_request(messages, config, {})
+            elif config.type == ProviderType.DEEPSEEK:
+                response = await handle_deepseek_request(messages, config, {})
+            elif config.type == ProviderType.CUSTOM:
+                response = await handle_custom_request(messages, config, {})
+            else:
+                raise HTTPException(400, f"Unsupported provider type: {config.type}")
             
             response_text = response['choices'][0]['message']['content']
             logger.info(f"OpenAI response: {response_text}")
